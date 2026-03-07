@@ -494,7 +494,18 @@ async function initCommand(force: boolean): Promise<void> {
   log.success(`Created ${path.join(specDir, "results")}/`);
 }
 
+function ensureProjectInitialized(): void {
+  const configPath = path.join(process.cwd(), ".spec", "spec.toml");
+  if (existsSync(configPath)) {
+    return;
+  }
+  throw new Error(
+    "Missing project config at .spec/spec.toml. Run `bun run spec init` and set `base_url` before running suites.",
+  );
+}
+
 async function tuiCommand(): Promise<void> {
+  ensureProjectInitialized();
   await runTui(await discoverSpecs());
 }
 

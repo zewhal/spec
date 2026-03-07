@@ -127,6 +127,13 @@ export async function runTui(specs: string[]): Promise<void> {
       return;
     }
 
+    state.passed = 0;
+    state.failed = 0;
+    state.total = 0;
+    state.tests = [];
+    state.status = "running";
+    renderStatus();
+
     const eventBus = new EventBus();
     const projectConfig = loadProjectConfig(findProjectConfigPath(specPath));
     const compiledPath = defaultCompiledOutputPath(findProjectConfigPath(specPath), specPath);
