@@ -165,7 +165,7 @@ export async function runTui(specs: string[]): Promise<void> {
     setText(introRecent, state.lastRunSummary);
 
     setText(statusText, renderStatusText());
-    setText(logText, renderLogText());
+    logText.content = renderStyledLogText();
 
     if (state.view === "intro") {
       body?.remove(runnerView.id);
@@ -212,14 +212,12 @@ export async function runTui(specs: string[]): Promise<void> {
     return lines.join("\n");
   }
 
-  function renderLogText(): string {
+  function renderStyledLogText(): string {
     if (logEntries.length === 0) {
       return "No logs yet. Start a run to see live execution output.";
     }
 
-    return logEntries
-      .map((entry) => renderEntry(entry))
-      .join("\n");
+    return logEntries.map((entry) => renderStyledEntry(entry)).join("\n");
   }
 
   function renderEntry(entry: LogEntry): string {
@@ -233,6 +231,10 @@ export async function runTui(specs: string[]): Promise<void> {
       }
     }
     return lines.join("\n");
+  }
+
+  function renderStyledEntry(entry: LogEntry): string {
+    return renderEntry(entry);
   }
 
   function entryBadge(kind: LogEntryKind): string {
@@ -432,6 +434,16 @@ export async function runTui(specs: string[]): Promise<void> {
       const normalizer = new SpecNormalizer({
         projectConfig,
         config: {
+          on_authoring_mode_detected: ({ test_name, authoring_mode }) => {
+            if (authoring_mode === "freeflow") {
+              logEntries.push({
+                kind: "result-info",
+                title: `Freeflow detected for "${test_name}"`,
+                body: "This test was interpreted as freeform prose, so outline extraction was used before normalization.",
+              });
+              render();
+            }
+          },
           on_llm_call: (prompt, response) => {
             setSpinner("Waiting for LLM...");
             logEntries.push({ kind: "llm-prompt", title: `Prompt: ${prompt.slice(0, 80)}...`, body: prompt });

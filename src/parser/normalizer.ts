@@ -21,6 +21,7 @@ export type NormalizerConfig = {
   llm_max_attempts?: number;
   llm_parse_tests?: boolean;
   on_llm_call?: (prompt: string, response: Record<string, unknown>) => void;
+  on_authoring_mode_detected?: (info: { test_name: string; authoring_mode: "auto" | "fixed" | "freeflow" }) => void;
 };
 
 const defaultNormalizerConfig: Required<NormalizerConfig> = {
@@ -31,6 +32,7 @@ const defaultNormalizerConfig: Required<NormalizerConfig> = {
   llm_max_attempts: 2,
   llm_parse_tests: true,
   on_llm_call: () => {},
+  on_authoring_mode_detected: () => {},
 };
 
 export class SpecNormalizer {
@@ -147,6 +149,10 @@ export class SpecNormalizer {
     let parsedSteps = [...rawTest.steps];
     let parsedExpectations = [...rawTest.expectations];
     const authoringMode = this.resolveAuthoringMode(rawTest);
+    this.config.on_authoring_mode_detected({
+      test_name: rawTest.name,
+      authoring_mode: authoringMode,
+    });
 
     if (this.config.llm_parse_tests && this.requiresOutlineExtraction(rawTest, authoringMode)) {
       const outline = await this.llmClient.extractTestOutline(
