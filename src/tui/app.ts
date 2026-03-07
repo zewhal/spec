@@ -49,48 +49,90 @@ export async function runTui(specs: string[]): Promise<void> {
   let spinnerFrameIndex = 0;
   let spinnerLabel = "Running...";
   let currentView: "intro" | "runner" = "intro";
+  let introPulse = 0;
+  let introTimer: ReturnType<typeof setInterval> | null = null;
+  let lastRunSummary = "No runs yet";
 
-  const header = blessed.box({ top: 0, left: 0, width: "100%", height: 3, content: " spec - Markdown -> Runtime -> Bun ", tags: false, style: { fg: "#f5f7fa", bg: "#19324a" } });
-  const footer = blessed.box({ bottom: 0, left: 0, width: "100%", height: 1, content: " enter open runner  r run  h headless  c compile-only  y copy logs  q quit ", style: { fg: "#d9e2ec", bg: "#102a43" } });
+  const header = blessed.box({ top: 0, left: 0, width: "100%", height: 3, content: " spec - Markdown -> Runtime -> Bun ", tags: true, style: { fg: "#f5f7fa", bg: "#10233a" } });
+  const footer = blessed.box({ bottom: 0, left: 0, width: "100%", height: 1, content: " enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit ", style: { fg: "#d9e2ec", bg: "#102a43" } });
+
+  const introBackdrop = blessed.box({ top: 3, left: 0, width: "100%", bottom: 1, style: { bg: "#07111b" } });
 
   const introBox = blessed.box({
-    top: 3,
+    top: 5,
     left: "center",
-    width: "78%",
-    height: "85%-1",
+    width: "84%",
+    height: "78%-1",
     border: "line",
-    label: " Welcome ",
-    tags: false,
-    style: { fg: "#f0f4f8", bg: "#0b1622", border: { fg: "#2f6b8a" } },
-    content: [
-      "",
-      "  SPEC",
-      "  Markdown -> LLM -> Playwright",
-      "",
-      "  Turn markdown suites into executable browser tests with Bun.",
-      "",
-      `  Specs discovered: ${specs.length}`,
-      `  Default mode: ${state.modeLabel}`,
-      `  Browser: ${state.headless ? "Headless" : "Headful"}`,
-      "",
-      "  Quick Start",
-      "  - Press Enter to open the runner",
-      "  - Press h to toggle browser mode",
-      "  - Press c to switch compile-only mode",
-      "  - Press y later to copy execution logs",
-      "",
-      "  This layout is intentionally opener-first so you land on a dashboard",
-      "  before dropping into spec execution.",
-    ].join("\n"),
+    label: " Launch Pad ",
+    tags: true,
+    style: { fg: "#f0f4f8", bg: "#0c1824", border: { fg: "#3aaed8" } },
   });
+
+  const heroBox = blessed.box({ top: 1, left: 2, width: "56%", height: 16, parent: introBox, tags: true, style: { fg: "#f0f4f8", bg: "#0c1824" } });
+  const statsBox = blessed.box({ top: 1, right: 2, width: "24%", height: 16, parent: introBox, tags: true, border: "line", label: " Stats ", style: { fg: "#d9e2ec", bg: "#10202d", border: { fg: "#4cc9f0" } } });
+  const actionsBox = blessed.box({ top: 18, left: 2, width: "38%", height: 12, parent: introBox, tags: true, border: "line", label: " Quick Start ", style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#7bdff2" } } });
+  const recentBox = blessed.box({ top: 18, left: "40%", width: "58%-2", height: 12, parent: introBox, tags: true, border: "line", label: " Last Run ", style: { fg: "#d9e2ec", bg: "#09131d", border: { fg: "#7bdff2" } } });
 
   const runnerShell = blessed.box({ top: 3, left: 0, width: "100%", bottom: 1, hidden: true });
   const specsPanel = blessed.list({ top: 0, left: 0, width: "30%", bottom: 0, parent: runnerShell, keys: true, vi: true, border: "line", label: " Specs ", items: specs.map((spec) => path.basename(spec)), style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#315f7d" }, selected: { bg: "#56c1ff", fg: "black" } } });
   const statusBox = blessed.box({ top: 0, left: "30%", width: "70%", height: "45%-1", parent: runnerShell, border: "line", label: " Run Status ", tags: false, scrollable: true, alwaysScroll: true, style: { fg: "#f0f4f8", bg: "#111f2d", border: { fg: "#315f7d" } } });
   const logBox = blessed.log({ top: "45%+2", left: "30%", width: "70%", bottom: 0, parent: runnerShell, border: "line", label: " Execution Log ", tags: false, scrollback: 200, style: { fg: "#d9e2ec", bg: "#08121b", border: { fg: "#315f7d" } } });
 
+  function introContent(): void {
+    const pulseColor = ["#4cc9f0", "#7bdff2", "#c8f7ff", "#7bdff2"][introPulse % 4] ?? "#4cc9f0";
+    header.setContent(` {bold}spec{/bold} {gray-fg}- Markdown -> Runtime -> Bun{/gray-fg} {right}{${pulseColor}-fg}live{/}`);
+    heroBox.setContent([
+      "",
+      ` {${pulseColor}-fg}  _____ ____  ______ _____{/}`,
+      ` {${pulseColor}-fg} / ___// __ \\/ ____// ___/{/}`,
+      ` {${pulseColor}-fg} \__ \\/ /_/ / __/   \__ \\ {/}`,
+      ` {${pulseColor}-fg}___/ / ____/ /___  ___/ /{/}`,
+      ` {${pulseColor}-fg}/____/_/   /_____//____/ {/}`,
+      "",
+      " {bold}Launch markdown specs into LLM-guided Playwright runs{/bold}",
+      "",
+      " Spec feels best when it opens like a tool, not a menu.",
+      " This screen is your staging area before execution.",
+      "",
+      ` {gray-fg}Current mode{/gray-fg}: ${state.modeLabel}`,
+      ` {gray-fg}Browser{/gray-fg}: ${state.headless ? "Headless" : "Headful"}`,
+    ].join("\n"));
+    statsBox.setContent([
+      "",
+      ` {bold}Specs{/bold}        ${specs.length}`,
+      "",
+      " {bold}Mode{/bold}",
+      ` ${state.modeLabel}`,
+      "",
+      " {bold}Browser{/bold}",
+      ` ${state.headless ? "Headless" : "Headful"}`,
+      "",
+      " {bold}Logs{/bold}",
+      " Clipboard + file export",
+    ].join("\n"));
+    actionsBox.setContent([
+      "",
+      " {bold}enter{/bold} open the runner",
+      " {bold}h{/bold}     toggle browser mode",
+      " {bold}c{/bold}     switch compile-only mode",
+      " {bold}y{/bold}     copy/export execution logs",
+      " {bold}esc{/bold}   return here from runner",
+      " {bold}q{/bold}     quit",
+    ].join("\n"));
+    recentBox.setContent([
+      "",
+      ` ${lastRunSummary}`,
+      "",
+      " Runs update here after each suite finishes.",
+      " Use this as a quick confidence panel before jumping back in.",
+    ].join("\n"));
+  }
+
   function showIntro(): void {
     currentView = "intro";
+    introContent();
+    introBackdrop.show();
     introBox.show();
     runnerShell.hide();
     screen.render();
@@ -98,6 +140,7 @@ export async function runTui(specs: string[]): Promise<void> {
 
   function showRunner(): void {
     currentView = "runner";
+    introBackdrop.hide();
     introBox.hide();
     runnerShell.show();
     specsPanel.focus();
@@ -107,7 +150,17 @@ export async function runTui(specs: string[]): Promise<void> {
   function renderStatus(): void {
     const lines: string[] = [];
     if (state.status === "idle") {
-      lines.push("Session Ready", "", `Browser mode: ${state.headless ? "Headless" : "Headful"}`, `Workflow: ${state.modeLabel}`, "Runner state: Idle", "", "Select a spec on the left and press r to start.", "Press h to toggle browser mode.", "Press c to switch compile-only mode.");
+      lines.push(
+        "Session Ready",
+        "",
+        `Browser mode: ${state.headless ? "Headless" : "Headful"}`,
+        `Workflow: ${state.modeLabel}`,
+        "Runner state: Idle",
+        "",
+        "Select a spec on the left and press r to start.",
+        "Press h to toggle browser mode.",
+        "Press c to switch compile-only mode.",
+      );
     } else {
       lines.push(state.name || "Active Suite", `Status: ${state.status === "running" ? "Running" : "Complete"}`);
       if (state.total > 0) {
@@ -337,9 +390,11 @@ export async function runTui(specs: string[]): Promise<void> {
       appendLog(`Report MD: ${persistedPaths.report_md}`);
       appendLog(`Report HTML: ${persistedPaths.report_html}`);
       appendLog(`Summary JSON: ${persistedPaths.summary_json}`);
+      lastRunSummary = `Last suite {bold}${result.suite_name}{/bold}\nStatus: ${result.status}\nArtifacts: ${result.artifacts_root}`;
     } catch (error) {
       appendLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
       state.status = "completed";
+      lastRunSummary = `Last suite failed before completion\nReason: ${error instanceof Error ? error.message : String(error)}`;
       renderStatus();
     } finally {
       spinnerActive = false;
@@ -348,13 +403,28 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   screen.append(header);
+  screen.append(introBackdrop);
   screen.append(introBox);
   screen.append(runnerShell);
   screen.append(footer);
   renderStatus();
   showIntro();
 
-  screen.key(["q", "C-c"], () => process.exit(0));
+  introTimer = setInterval(() => {
+    if (currentView !== "intro") {
+      return;
+    }
+    introPulse += 1;
+    introContent();
+    screen.render();
+  }, 700);
+
+  screen.key(["q", "C-c"], () => {
+    if (introTimer) {
+      clearInterval(introTimer);
+    }
+    process.exit(0);
+  });
   screen.key(["enter"], () => {
     if (currentView === "intro") {
       showRunner();
@@ -367,50 +437,12 @@ export async function runTui(specs: string[]): Promise<void> {
   });
   screen.key(["h"], () => {
     state.headless = !state.headless;
-    introBox.setContent([
-      "",
-      "  SPEC",
-      "  Markdown -> LLM -> Playwright",
-      "",
-      "  Turn markdown suites into executable browser tests with Bun.",
-      "",
-      `  Specs discovered: ${specs.length}`,
-      `  Default mode: ${state.modeLabel}`,
-      `  Browser: ${state.headless ? "Headless" : "Headful"}`,
-      "",
-      "  Quick Start",
-      "  - Press Enter to open the runner",
-      "  - Press h to toggle browser mode",
-      "  - Press c to switch compile-only mode",
-      "  - Press y later to copy execution logs",
-      "",
-      "  This layout is intentionally opener-first so you land on a dashboard",
-      "  before dropping into spec execution.",
-    ].join("\n"));
+    introContent();
     renderStatus();
   });
   screen.key(["c"], () => {
     state.modeLabel = state.modeLabel === "Compile Only" ? "Compile + Run" : "Compile Only";
-    introBox.setContent([
-      "",
-      "  SPEC",
-      "  Markdown -> LLM -> Playwright",
-      "",
-      "  Turn markdown suites into executable browser tests with Bun.",
-      "",
-      `  Specs discovered: ${specs.length}`,
-      `  Default mode: ${state.modeLabel}`,
-      `  Browser: ${state.headless ? "Headless" : "Headful"}`,
-      "",
-      "  Quick Start",
-      "  - Press Enter to open the runner",
-      "  - Press h to toggle browser mode",
-      "  - Press c to switch compile-only mode",
-      "  - Press y later to copy execution logs",
-      "",
-      "  This layout is intentionally opener-first so you land on a dashboard",
-      "  before dropping into spec execution.",
-    ].join("\n"));
+    introContent();
     renderStatus();
   });
   screen.key(["r"], () => {
