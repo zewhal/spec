@@ -73,6 +73,14 @@ That produces:
 - It tries fixed grammar first for lower token cost and more deterministic parsing.
 - If a test does not look structured, it falls back to freeflow mode and lets the LLM extract steps and expectations.
 
+### For Devs
+
+Use fixed grammar when you want predictable parsing, cleaner diffs, and lower token cost.
+
+- best for CI-critical tests
+- best when you want exact `Steps` and `Expect` sections
+- best when engineers are maintaining test suites long-term
+
 Fixed grammar example:
 
 ```md
@@ -90,6 +98,20 @@ Fixed grammar example:
 - Text "Checkout" should be visible
 ```
 
+Why this is recommended for devs:
+
+- `spec` can usually parse it without spending extra LLM tokens on outline extraction
+- the resulting action/expectation graph is more stable
+- it is easier to review in pull requests
+
+### For Non-Devs
+
+Use freeflow when you want to describe intent in plain language and let `spec` turn it into executable steps.
+
+- best for PMs, QA, founders, designers, and support teams
+- best when speed of authoring matters more than rigid structure
+- best for capturing a behavior before refining it into fixed grammar later
+
 Freeflow example:
 
 ```md
@@ -100,11 +122,25 @@ Freeflow example:
 Open the storefront, click buy now, continue to checkout, and confirm the checkout page is visible.
 ```
 
+How it works for non-dev authors:
+
+- write the test like a short scenario
+- `spec` detects that it is not fixed grammar
+- the LLM extracts steps and expectations before execution
+
 Recommendation:
 
 - Use fixed grammar for CI-critical and frequently edited tests.
 - Use freeflow when non-devs or PMs need to author tests quickly.
 - Let auto mode handle both in the same repo.
+
+### Best Practice
+
+Start broad, then tighten over time.
+
+- non-devs can begin with freeflow to capture behavior quickly
+- devs can later convert important flows into fixed grammar for stronger determinism
+- both styles can live in the same repository because auto mode handles them together
 
 ## Workflow
 
