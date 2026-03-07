@@ -5,7 +5,11 @@
   "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "spec": "./src/index.ts"
+  },
   "scripts": {
+    "spec": "bun run ./src/index.ts",
     "test": "bun test"
   },
   "devDependencies": {

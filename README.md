@@ -1,20 +1,51 @@
 # spec
 
-`spec` compiles markdown specs into strict runtime plans, executes them through Playwright, and saves evidence-rich outputs in a Bun-first TypeScript codebase.
+`spec` turns human-written or LLM-written Markdown into executable browser-style test plans in a Bun-first TypeScript codebase. It compiles specs into a strict runtime format, runs them through the Bun CLI flow, and saves compiled plans plus result artifacts under `.spec/`.
 
-To install dependencies:
+## Quick Start
+
+Install dependencies:
 
 ```bash
 bun install
 ```
 
-To run:
+Set project defaults in `.spec/spec.toml`:
 
-```bash
-bun run src/index.ts
+```toml
+[spec]
+base_url = "http://localhost:3000"
+results_dir = ".spec/results"
+
+[spec.browser]
+browser = "chromium"
+viewport = "desktop"
+locale = "en-US"
 ```
 
-To test:
+Launch it like Ahente:
+
+```bash
+bun run spec
+```
+
+## Workflow
+
+- `bun run spec` lists discovered markdown specs, like Ahente's default entry flow.
+- `bun run spec init` creates `.spec/spec.toml` and `.spec/results/`.
+- `bun run spec compile tests/specs/example.md` writes `.spec/compiled/<name>.json`.
+- `bun run spec run tests/specs/example.md` writes suite artifacts to `.spec/results/<suite-id>/`.
+- `bun run spec report .spec/results/<suite-id>/result.json --format markdown` regenerates reports.
+
+## Output Layout
+
+- `.spec/compiled/<spec-name>.json`
+- `.spec/results/<suite-id>/result.json`
+- `.spec/results/<suite-id>/report.md`
+- `.spec/results/<suite-id>/report.html`
+- `.spec/results/<suite-id>/summary.json`
+
+## Testing
 
 ```bash
 bun test
