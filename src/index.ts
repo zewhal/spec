@@ -1,14 +1,16 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
+import { intro, log, note, outro, select, spinner } from "@clack/prompts";
+import pc from "picocolors";
 import slugify from "slugify";
 
-import { loadProjectConfig, findProjectConfigPath } from "./config/project";
+import { findProjectConfigPath, loadProjectConfig } from "./config/project";
+import type { Action } from "./models/action";
+import type { Expectation } from "./models/expectation";
+import { testSuiteSchema, type TestSuite } from "./models/suite";
 import { loadMarkdown, listMarkdownSpecs } from "./parser/markdown-loader";
 import { parseMarkdownToRaw } from "./parser/markdown-parser";
-import type { Expectation } from "./models/expectation";
-import type { Action } from "./models/action";
-import { testSuiteSchema, type TestSuite } from "./models/suite";
 import { compiledPlanIsFresh, defaultCompiledOutputPath, fileSha256, writeCompiledPlan } from "./runtime/persistence";
 
 export const appName = "spec";
@@ -21,12 +23,36 @@ type ParsedArgs = {
   options: Record<string, string | boolean | string[]>;
 };
 
+type RunArtifacts = {
+  suiteDir: string;
+  resultJson: string;
+  reportMd: string;
+  reportHtml: string;
+  summaryJson: string;
+};
+
+type SuiteRunResult = {
+  suite_id: string;
+  suite_name: string;
+  status: "passed" | "skipped";
+  tests: Array<{
+    id: string;
+    name: string;
+    status: "passed" | "skipped";
+    steps: Array<{ kind: string; status: "passed" }>;
+    expectations: Array<{ kind: string; status: "passed" }>;
+  }>;
+  duration_ms: number;
+  artifacts_root: string;
+  final_url: string;
+};
+
 const helpText = `spec CLI for markdown-to-browser execution.
 
 Usage:
-  bun run spec                Launch the default TUI-style spec listing
-  bun run spec tui            Launch the default TUI-style spec listing
-  bun run spec init           Create .spec/spec.toml
+  bun run spec
+  bun run spec tui
+  bun run spec init
   bun run spec normalize <path> [--out file]
   bun run spec compile <path> [--out file]
   bun run spec run <path> [--out-dir dir] [--compiled-out file] [--tag value]
@@ -42,7 +68,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (token === undefined) {
+    if (!token) {
       continue;
     }
     if (!token.startsWith("--")) {
@@ -57,22 +83,21 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     const option = token.slice(2);
     const [rawKey, inlineValue] = option.split("=", 2);
-    if (rawKey && inlineValue !== undefined) {
+    if (!rawKey) {
+      continue;
+    }
+    if (inlineValue !== undefined) {
       appendOption(options, rawKey, inlineValue);
       continue;
     }
 
     const next = tokens[index + 1];
     if (!next || next.startsWith("--")) {
-      if (rawKey) {
-        options[rawKey] = true;
-      }
+      options[rawKey] = true;
       continue;
     }
 
-    if (rawKey) {
-      appendOption(options, rawKey, next);
-    }
+    appendOption(options, rawKey, next);
     index += 1;
   }
 
@@ -139,28 +164,17 @@ async function discoverSpecs(startPath: string = process.cwd()): Promise<string[
   return matches.sort();
 }
 
-function printSpecs(specs: string[]): void {
-  if (specs.length === 0) {
-    console.log("No markdown specs found.");
-    return;
-  }
-
-  console.log("Specs:");
-  for (const spec of specs) {
-    console.log(`- ${path.relative(process.cwd(), spec)}`);
-  }
-}
-
 function buildSuiteFromRaw(specPath: string, strictMode: boolean): TestSuite {
   const config = loadProjectConfig(findProjectConfigPath(specPath));
   const raw = parseMarkdownToRaw(readFileSync(specPath, "utf8"));
   const suiteId = slugify(raw.name, { lower: true, strict: true }) || path.parse(specPath).name;
 
-  const parseActions = (items: string[]): Action[] => items.map((item, index) => ({
-    id: `${suiteId}-step-${index + 1}`,
-    kind: "comment",
-    text: item,
-  }));
+  const parseActions = (items: string[]): Action[] =>
+    items.map((item, index) => ({
+      id: `${suiteId}-step-${index + 1}`,
+      kind: "comment",
+      text: item,
+    }));
 
   const parseExpectations = (items: string[]): Expectation[] =>
     items.map((item, index) => {
@@ -251,18 +265,11 @@ function buildSuiteFromRaw(specPath: string, strictMode: boolean): TestSuite {
 
 async function compileSuites(specPath: string, strictMode: boolean): Promise<TestSuite[]> {
   const specs = await listMarkdownSpecs(specPath);
-  const suites: TestSuite[] = [];
-  for (const spec of specs) {
-    const markdown = await loadMarkdown(spec);
-    const raw = parseMarkdownToRaw(markdown);
-    void raw;
-    suites.push(buildSuiteFromRaw(spec, strictMode));
-  }
-  return suites;
+  return specs.map((spec) => buildSuiteFromRaw(spec, strictMode));
 }
 
-function printJson(value: unknown): void {
-  console.log(JSON.stringify(value, null, 2));
+function serializeSuites(suites: TestSuite[]): unknown {
+  return suites.length === 1 ? suites[0] : { suites };
 }
 
 function loadCompiledSuites(filePath: string): TestSuite[] {
@@ -273,86 +280,134 @@ function loadCompiledSuites(filePath: string): TestSuite[] {
   return [testSuiteSchema.parse(payload)];
 }
 
-async function runCommand(parsed: ParsedArgs): Promise<void> {
-  const specPath = path.resolve(requirePositional(parsed.positionals, "SPEC_PATH"));
-  const outputDir = path.resolve(getStringOption(parsed.options, "out-dir") ?? ".spec/results");
-  const compiledOut = getStringOption(parsed.options, "compiled-out");
-  const tags = new Set(getListOption(parsed.options, "tag"));
-  const strictMode = getBooleanOption(parsed.options, "strict-mode", false);
-
-  const suites = specPath.endsWith(".json") ? loadCompiledSuites(specPath) : await loadSuitesForExecution(specPath, strictMode, compiledOut);
-  mkdirSync(outputDir, { recursive: true });
-
-  const results = suites.map((suite) => {
-    const selectedTests = tags.size === 0 ? suite.tests : suite.tests.filter((test) => test.tags.some((tag) => tags.has(tag)));
-    return {
-      suite_id: suite.id,
-      suite_name: suite.name,
-      status: selectedTests.length > 0 ? "passed" : "skipped",
-      tests: selectedTests.map((test) => ({
-        id: test.id,
-        name: test.name,
-        status: "passed",
-        steps: test.steps.map((step) => ({ kind: step.kind, status: "passed" })),
-        expectations: test.expectations.map((expectation) => ({ kind: expectation.kind, status: "passed" })),
-      })),
-      duration_ms: 0,
-      artifacts_root: path.join(outputDir, suite.id),
-      final_url: suite.base_url,
-    };
-  });
-
-  for (const result of results) {
-    const suiteDir = path.join(outputDir, result.suite_id);
-    mkdirSync(suiteDir, { recursive: true });
-    Bun.write(path.join(suiteDir, "result.json"), JSON.stringify(result, null, 2));
-    Bun.write(path.join(suiteDir, "report.md"), `# ${result.suite_name}\n\nStatus: ${result.status}\n`);
-    Bun.write(path.join(suiteDir, "report.html"), `<html><body><h1>${result.suite_name}</h1><p>Status: ${result.status}</p></body></html>`);
-    Bun.write(path.join(suiteDir, "summary.json"), JSON.stringify({ suite: result.suite_name, status: result.status, artifacts_root: result.artifacts_root }, null, 2));
-    console.log(`Finished suite ${result.suite_name} -> ${path.join(suiteDir, "result.json")}`);
-  }
-}
-
 async function loadSuitesForExecution(specPath: string, strictMode: boolean, compiledOut?: string): Promise<TestSuite[]> {
+  if (specPath.endsWith(".json")) {
+    return loadCompiledSuites(specPath);
+  }
+
   const projectConfigPath = findProjectConfigPath(specPath);
   const cachePath = path.resolve(compiledOut ?? defaultCompiledOutputPath(projectConfigPath, specPath));
   if (compiledPlanIsFresh(cachePath, specPath)) {
-    console.log(`Reusing compiled plan: ${cachePath}`);
+    log.message(`Reusing compiled plan: ${cachePath}`);
     return loadCompiledSuites(cachePath);
   }
+
   const suites = await compileSuites(specPath, strictMode);
-  writeCompiledPlan({ suites, destination: cachePath, sourceSpec: specPath, sourceHash: fileSha256(specPath) });
-  console.log(`Compiled suite written to ${cachePath}`);
+  writeCompiledPlan({
+    suites,
+    destination: cachePath,
+    sourceSpec: specPath,
+    sourceHash: fileSha256(specPath),
+  });
+  log.success(`Compiled suite written to ${cachePath}`);
   return suites;
 }
 
-async function normalizeOrCompile(parsed: ParsedArgs, writeOutput: boolean): Promise<void> {
+async function writeRunArtifacts(outputDir: string, suite: TestSuite, tags: Set<string>): Promise<{ result: SuiteRunResult; artifacts: RunArtifacts }> {
+  const selectedTests = tags.size === 0 ? suite.tests : suite.tests.filter((test) => test.tags.some((tag) => tags.has(tag)));
+  const result: SuiteRunResult = {
+    suite_id: suite.id,
+    suite_name: suite.name,
+    status: selectedTests.length > 0 ? "passed" : "skipped",
+    tests: selectedTests.map((test) => ({
+      id: test.id,
+      name: test.name,
+      status: "passed",
+      steps: test.steps.map((step) => ({ kind: step.kind, status: "passed" })),
+      expectations: test.expectations.map((expectation) => ({ kind: expectation.kind, status: "passed" })),
+    })),
+    duration_ms: 0,
+    artifacts_root: path.join(outputDir, suite.id),
+    final_url: suite.base_url,
+  };
+
+  const suiteDir = path.join(outputDir, suite.id);
+  mkdirSync(suiteDir, { recursive: true });
+
+  const artifacts: RunArtifacts = {
+    suiteDir,
+    resultJson: path.join(suiteDir, "result.json"),
+    reportMd: path.join(suiteDir, "report.md"),
+    reportHtml: path.join(suiteDir, "report.html"),
+    summaryJson: path.join(suiteDir, "summary.json"),
+  };
+
+  await Bun.write(artifacts.resultJson, JSON.stringify(result, null, 2));
+  await Bun.write(artifacts.reportMd, `# ${result.suite_name}\n\nStatus: ${result.status}\n`);
+  await Bun.write(artifacts.reportHtml, `<html><body><h1>${result.suite_name}</h1><p>Status: ${result.status}</p></body></html>`);
+  await Bun.write(
+    artifacts.summaryJson,
+    JSON.stringify(
+      {
+        suite: result.suite_name,
+        status: result.status,
+        artifacts_root: result.artifacts_root,
+        final_url: result.final_url,
+      },
+      null,
+      2,
+    ),
+  );
+
+  return { result, artifacts };
+}
+
+async function runSpecPath(specPath: string, options: { outputDir?: string; compiledOut?: string; tags?: string[]; strictMode?: boolean; compileOnly?: boolean }): Promise<void> {
+  const outputDir = path.resolve(options.outputDir ?? ".spec/results");
+  const tags = new Set(options.tags ?? []);
+  mkdirSync(outputDir, { recursive: true });
+
+  const suites = await loadSuitesForExecution(specPath, options.strictMode ?? false, options.compiledOut);
+
+  for (const suite of suites) {
+    if (options.compileOnly) {
+      log.success(`Compiled ${suite.name}`);
+      continue;
+    }
+
+    const progress = spinner();
+    progress.start(`Running ${suite.name}`);
+    const { result, artifacts } = await writeRunArtifacts(outputDir, suite, tags);
+    progress.stop(`${result.suite_name} ${result.status}`);
+    note(
+      [
+        `Result: ${artifacts.resultJson}`,
+        `Markdown: ${artifacts.reportMd}`,
+        `HTML: ${artifacts.reportHtml}`,
+        `Summary: ${artifacts.summaryJson}`,
+      ].join("\n"),
+      suite.name,
+    );
+  }
+}
+
+async function normalizeCommand(parsed: ParsedArgs): Promise<void> {
   const specPath = path.resolve(requirePositional(parsed.positionals, "SPEC_PATH"));
-  const strictMode = getBooleanOption(parsed.options, "strict-mode", false);
-  const suites = await compileSuites(specPath, strictMode);
-  const output = getStringOption(parsed.options, "out");
-  if (writeOutput && output) {
-    writeCompiledPlan({
-      suites,
-      destination: path.resolve(output),
-      sourceSpec: existsSync(specPath) && specPath.endsWith(".md") ? specPath : undefined,
-      sourceHash: existsSync(specPath) && specPath.endsWith(".md") ? fileSha256(specPath) : undefined,
-    });
-    console.log(`Normalized spec written to ${path.resolve(output)}`);
-    return;
-  }
-  if (writeOutput) {
-    const destination = defaultCompiledOutputPath(findProjectConfigPath(specPath), specPath);
-    writeCompiledPlan({
-      suites,
-      destination,
-      sourceSpec: existsSync(specPath) && specPath.endsWith(".md") ? specPath : undefined,
-      sourceHash: existsSync(specPath) && specPath.endsWith(".md") ? fileSha256(specPath) : undefined,
-    });
-    console.log(`Normalized spec written to ${destination}`);
-    return;
-  }
-  printJson(suites.length === 1 ? suites[0] : { suites });
+  const suites = await compileSuites(specPath, getBooleanOption(parsed.options, "strict-mode", false));
+  console.log(JSON.stringify(serializeSuites(suites), null, 2));
+}
+
+async function compileCommand(parsed: ParsedArgs): Promise<void> {
+  const specPath = path.resolve(requirePositional(parsed.positionals, "SPEC_PATH"));
+  const suites = await compileSuites(specPath, getBooleanOption(parsed.options, "strict-mode", false));
+  const output = path.resolve(getStringOption(parsed.options, "out") ?? defaultCompiledOutputPath(findProjectConfigPath(specPath), specPath));
+  writeCompiledPlan({
+    suites,
+    destination: output,
+    sourceSpec: specPath.endsWith(".md") ? specPath : undefined,
+    sourceHash: specPath.endsWith(".md") ? fileSha256(specPath) : undefined,
+  });
+  log.success(`Normalized spec written to ${output}`);
+}
+
+async function runCommand(parsed: ParsedArgs): Promise<void> {
+  const specPath = path.resolve(requirePositional(parsed.positionals, "SPEC_PATH"));
+  await runSpecPath(specPath, {
+    outputDir: getStringOption(parsed.options, "out-dir"),
+    compiledOut: getStringOption(parsed.options, "compiled-out"),
+    tags: getListOption(parsed.options, "tag"),
+    strictMode: getBooleanOption(parsed.options, "strict-mode", false),
+  });
 }
 
 async function reportCommand(parsed: ParsedArgs): Promise<void> {
@@ -360,18 +415,21 @@ async function reportCommand(parsed: ParsedArgs): Promise<void> {
   const format = (getStringOption(parsed.options, "format") ?? "markdown").toLowerCase();
   const out = getStringOption(parsed.options, "out");
   const result = JSON.parse(readFileSync(resultPath, "utf8")) as { suite_name: string; status: string };
+
   if (format === "markdown" || format === "md") {
     const destination = path.resolve(out ?? resultPath.replace(/\.json$/u, ".md"));
     await Bun.write(destination, `# ${result.suite_name}\n\nStatus: ${result.status}\n`);
-    console.log(`Markdown report written to ${destination}`);
+    log.success(`Markdown report written to ${destination}`);
     return;
   }
+
   if (format === "html") {
     const destination = path.resolve(out ?? resultPath.replace(/\.json$/u, ".html"));
     await Bun.write(destination, `<html><body><h1>${result.suite_name}</h1><p>Status: ${result.status}</p></body></html>`);
-    console.log(`HTML report written to ${destination}`);
+    log.success(`HTML report written to ${destination}`);
     return;
   }
+
   throw new Error("--format must be one of: markdown, md, html");
 }
 
@@ -382,30 +440,77 @@ async function initCommand(force: boolean): Promise<void> {
   if (existsSync(configPath) && !force) {
     throw new Error(`Config already exists at ${configPath}. Use --force to overwrite.`);
   }
+
   await Bun.write(
     configPath,
     `# Spec configuration\n# This file is committed to version control\n\n[spec]\nspecs_pattern = "tests/**/*.md"\nresults_dir = ".spec/results"\nbase_url = "http://localhost:3000"\ncapture = "on-failure"\nallowed_subdomains = []\n\n[spec.browser]\nbrowser = "chromium"\nviewport = "desktop"\nlocale = "en-US"\n\n[spec.runtime]\ndefault_timeout_ms = 10000\nassertion_timeout_ms = 10000\nlocator_resolution_timeout_ms = 5000\nnavigation_timeout_ms = 30000\nmax_retries = 0\nretry_on_flake = false\nstrict_mode = false\n`,
   );
   mkdirSync(path.join(specDir, "results"), { recursive: true });
-  console.log(`Created ${configPath}`);
-  console.log(`Created ${path.join(specDir, "results")}/`);
+  log.success(`Created ${configPath}`);
+  log.success(`Created ${path.join(specDir, "results")}/`);
+}
+
+async function tuiCommand(): Promise<void> {
+  const specs = await discoverSpecs();
+  intro(pc.cyan("spec"));
+
+  if (specs.length === 0) {
+    note("No markdown specs found. Run `bun run spec init` and add files matching `tests/**/*.md`.", "No Specs");
+    outro("Nothing to run yet.");
+    return;
+  }
+
+  const specPath = await select<string>({
+    message: "Choose a markdown spec",
+    options: specs.map((spec) => ({ value: spec, label: path.relative(process.cwd(), spec) })),
+  });
+
+  if (typeof specPath !== "string") {
+    outro("Cancelled.");
+    return;
+  }
+
+  const mode = await select<string>({
+    message: "Choose workflow",
+    options: [
+      { value: "run", label: "Compile + Run" },
+      { value: "compile", label: "Compile Only" },
+    ],
+  });
+
+  if (typeof mode !== "string") {
+    outro("Cancelled.");
+    return;
+  }
+
+  note(`Spec: ${path.relative(process.cwd(), specPath)}\nMode: ${mode === "run" ? "Compile + Run" : "Compile Only"}`, "Session");
+
+  if (mode === "compile") {
+    await runSpecPath(specPath, { compileOnly: true });
+    outro("Compile complete.");
+    return;
+  }
+
+  await runSpecPath(specPath, {});
+  outro("Run complete.");
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const parsed = parseArgs(argv);
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(helpText);
     return;
   }
+
+  const parsed = parseArgs(argv);
   switch (parsed.command) {
     case "help":
       console.log(helpText);
       return;
     case "normalize":
-      await normalizeOrCompile(parsed, false);
+      await normalizeCommand(parsed);
       return;
     case "compile":
-      await normalizeOrCompile(parsed, true);
+      await compileCommand(parsed);
       return;
     case "run":
       await runCommand(parsed);
@@ -417,17 +522,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await initCommand(getBooleanOption(parsed.options, "force", false));
       return;
     case "tui":
-      printSpecs(await discoverSpecs());
+      await tuiCommand();
       return;
-    default:
-      console.log(helpText);
   }
 }
 
 if (import.meta.main) {
   main().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(message);
+    log.error(message);
     process.exit(1);
   });
 }
