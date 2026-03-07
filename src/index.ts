@@ -6,10 +6,12 @@ import pc from "picocolors";
 import slugify from "slugify";
 
 import { findProjectConfigPath, loadProjectConfig } from "./config/project";
+import { resolveLlmModel } from "./integrations";
 import type { Action } from "./models/action";
 import type { Expectation } from "./models/expectation";
 import { testSuiteSchema, type TestSuite } from "./models/suite";
 import { loadMarkdown, listMarkdownSpecs } from "./parser/markdown-loader";
+import { SpecNormalizer, type NormalizerConfig } from "./parser/normalizer";
 import { parseMarkdownToRaw } from "./parser/markdown-parser";
 import { compiledPlanIsFresh, defaultCompiledOutputPath, fileSha256, writeCompiledPlan } from "./runtime/persistence";
 
@@ -263,9 +265,39 @@ function buildSuiteFromRaw(specPath: string, strictMode: boolean): TestSuite {
   });
 }
 
-async function compileSuites(specPath: string, strictMode: boolean): Promise<TestSuite[]> {
+async function buildSuiteWithLlm(specPath: string, options: { strictMode: boolean; llmModel?: string; llmTemperature?: number; llmMaxAttempts?: number; onLlmCall?: NormalizerConfig["on_llm_call"] }): Promise<TestSuite> {
+  const config = loadProjectConfig(findProjectConfigPath(specPath));
+  const raw = parseMarkdownToRaw(readFileSync(specPath, "utf8"));
+  const normalizer = new SpecNormalizer({
+    config: {
+      strict_mode: options.strictMode,
+      llm_model: resolveLlmModel(options.llmModel),
+      llm_temperature: options.llmTemperature,
+      llm_max_attempts: options.llmMaxAttempts,
+      on_llm_call: options.onLlmCall,
+    },
+    projectConfig: config,
+  });
+  return normalizer.normalize(raw);
+}
+
+async function compileSuites(specPath: string, strictMode: boolean, llmOptions?: { llmModel?: string; llmTemperature?: number; llmMaxAttempts?: number; onLlmCall?: NormalizerConfig["on_llm_call"] }): Promise<TestSuite[]> {
   const specs = await listMarkdownSpecs(specPath);
-  return specs.map((spec) => buildSuiteFromRaw(spec, strictMode));
+  const suites: TestSuite[] = [];
+  for (const spec of specs) {
+    suites.push(
+      process.env.OPENAI_API_KEY
+        ? await buildSuiteWithLlm(spec, {
+            strictMode,
+            llmModel: llmOptions?.llmModel,
+            llmTemperature: llmOptions?.llmTemperature,
+            llmMaxAttempts: llmOptions?.llmMaxAttempts,
+            onLlmCall: llmOptions?.onLlmCall,
+          })
+        : buildSuiteFromRaw(spec, strictMode),
+    );
+  }
+  return suites;
 }
 
 function serializeSuites(suites: TestSuite[]): unknown {
@@ -280,7 +312,7 @@ function loadCompiledSuites(filePath: string): TestSuite[] {
   return [testSuiteSchema.parse(payload)];
 }
 
-async function loadSuitesForExecution(specPath: string, strictMode: boolean, compiledOut?: string): Promise<TestSuite[]> {
+async function loadSuitesForExecution(specPath: string, strictMode: boolean, compiledOut?: string, llmOptions?: { llmModel?: string; llmTemperature?: number; llmMaxAttempts?: number; onLlmCall?: NormalizerConfig["on_llm_call"] }): Promise<TestSuite[]> {
   if (specPath.endsWith(".json")) {
     return loadCompiledSuites(specPath);
   }
@@ -292,7 +324,7 @@ async function loadSuitesForExecution(specPath: string, strictMode: boolean, com
     return loadCompiledSuites(cachePath);
   }
 
-  const suites = await compileSuites(specPath, strictMode);
+  const suites = await compileSuites(specPath, strictMode, llmOptions);
   writeCompiledPlan({
     suites,
     destination: cachePath,
@@ -357,7 +389,11 @@ async function runSpecPath(specPath: string, options: { outputDir?: string; comp
   const tags = new Set(options.tags ?? []);
   mkdirSync(outputDir, { recursive: true });
 
-  const suites = await loadSuitesForExecution(specPath, options.strictMode ?? false, options.compiledOut);
+  const suites = await loadSuitesForExecution(specPath, options.strictMode ?? false, options.compiledOut, {
+    llmModel: undefined,
+    llmTemperature: 1,
+    llmMaxAttempts: 2,
+  });
 
   for (const suite of suites) {
     if (options.compileOnly) {
@@ -383,13 +419,21 @@ async function runSpecPath(specPath: string, options: { outputDir?: string; comp
 
 async function normalizeCommand(parsed: ParsedArgs): Promise<void> {
   const specPath = path.resolve(requirePositional(parsed.positionals, "SPEC_PATH"));
-  const suites = await compileSuites(specPath, getBooleanOption(parsed.options, "strict-mode", false));
+  const suites = await compileSuites(specPath, getBooleanOption(parsed.options, "strict-mode", false), {
+    llmModel: getStringOption(parsed.options, "llm-model"),
+    llmTemperature: Number(getStringOption(parsed.options, "llm-temperature") ?? "1"),
+    llmMaxAttempts: Number(getStringOption(parsed.options, "llm-max-attempts") ?? "2"),
+  });
   console.log(JSON.stringify(serializeSuites(suites), null, 2));
 }
 
 async function compileCommand(parsed: ParsedArgs): Promise<void> {
   const specPath = path.resolve(requirePositional(parsed.positionals, "SPEC_PATH"));
-  const suites = await compileSuites(specPath, getBooleanOption(parsed.options, "strict-mode", false));
+  const suites = await compileSuites(specPath, getBooleanOption(parsed.options, "strict-mode", false), {
+    llmModel: getStringOption(parsed.options, "llm-model"),
+    llmTemperature: Number(getStringOption(parsed.options, "llm-temperature") ?? "1"),
+    llmMaxAttempts: Number(getStringOption(parsed.options, "llm-max-attempts") ?? "2"),
+  });
   const output = path.resolve(getStringOption(parsed.options, "out") ?? defaultCompiledOutputPath(findProjectConfigPath(specPath), specPath));
   writeCompiledPlan({
     suites,

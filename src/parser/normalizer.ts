@@ -1,0 +1,461 @@
+import slugify from "slugify";
+
+import type { ProjectConfig } from "../config";
+import { MiniMaxClient, type MiniMaxClientConfig } from "../integrations";
+import type { Action } from "../models/action";
+import { actionSchema } from "../models/action";
+import { expectationSchema, type Expectation } from "../models/expectation";
+import { DEFAULT_MINIMAX_MODEL } from "../integrations";
+import type { TargetHint } from "../models/selector";
+import type { TestCase, TestSuite } from "../models/suite";
+import { artifactPolicySchema, retryPolicySchema, runtimePolicySchema, testSuiteSchema } from "../models/suite";
+import type { RawSuiteDocument, RawTestCase } from "./raw-models";
+
+export class SpecNormalizationError extends Error {}
+
+export type NormalizerConfig = {
+  strict_mode?: boolean;
+  llm_model?: string;
+  llm_temperature?: number;
+  llm_max_attempts?: number;
+  llm_parse_tests?: boolean;
+  on_llm_call?: (prompt: string, response: Record<string, unknown>) => void;
+};
+
+const defaultNormalizerConfig: Required<NormalizerConfig> = {
+  strict_mode: false,
+  llm_model: DEFAULT_MINIMAX_MODEL,
+  llm_temperature: 1,
+  llm_max_attempts: 2,
+  llm_parse_tests: true,
+  on_llm_call: () => {},
+};
+
+export class SpecNormalizer {
+  readonly config: Required<NormalizerConfig>;
+  readonly projectConfig: ProjectConfig;
+  readonly llmClient: MiniMaxClient;
+
+  constructor(options: {
+    config?: NormalizerConfig;
+    llmClient?: MiniMaxClient;
+    projectConfig?: ProjectConfig;
+  } = {}) {
+    this.config = { ...defaultNormalizerConfig, ...options.config };
+    this.projectConfig = options.projectConfig ?? {
+      paths: { specs_pattern: "tests/**/*.md", results_dir: ".spec/results" },
+      runtime: {
+        base_url: "",
+        browser: "chromium",
+        viewport: "desktop",
+        locale: "en-US",
+        capture: "on-failure",
+        allowed_subdomains: [],
+        default_timeout_ms: 10_000,
+        assertion_timeout_ms: 10_000,
+        locator_resolution_timeout_ms: 5_000,
+        navigation_timeout_ms: 30_000,
+        max_retries: 0,
+        retry_on_flake: false,
+        strict_mode: false,
+      },
+    };
+    this.llmClient =
+      options.llmClient ??
+      new MiniMaxClient(
+        {
+          model: this.config.llm_model,
+          temperature: this.config.llm_temperature,
+          max_attempts: this.config.llm_max_attempts,
+        } satisfies MiniMaxClientConfig,
+        this.config.on_llm_call,
+      );
+  }
+
+  async normalize(rawSuite: RawSuiteDocument): Promise<TestSuite> {
+    const mergedConfig = this.mergedSuiteConfig(rawSuite);
+    const baseUrl = String(mergedConfig.base_url ?? "").trim();
+    if (!baseUrl) {
+      throw new SpecNormalizationError("A base_url is required. Set it in `.spec/spec.toml` or the suite config.");
+    }
+
+    const suiteId = slugify(rawSuite.name) || "suite";
+    const resolvedVariables = this.resolveEnvVariables(rawSuite.variables);
+
+    const setupSteps = await Promise.all(
+      rawSuite.setup_steps.map((step, index) => this.normalizeStepText(step, resolvedVariables, index + 1)),
+    );
+    const teardownSteps = await Promise.all(
+      rawSuite.teardown_steps.map((step, index) => this.normalizeStepText(step, resolvedVariables, index + 1)),
+    );
+    const tests = await Promise.all(
+      rawSuite.tests.map((test, index) => this.normalizeTest(rawSuite, test, index + 1, resolvedVariables)),
+    );
+
+    const allowedSubdomains = String(mergedConfig.allowed_subdomains ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    return testSuiteSchema.parse({
+      id: suiteId,
+      name: rawSuite.name,
+      base_url: baseUrl,
+      browser: mergedConfig.browser ?? "chromium",
+      viewport: mergedConfig.viewport ?? "desktop",
+      locale: mergedConfig.locale ?? "en-US",
+      variables: resolvedVariables,
+      datasets: rawSuite.datasets,
+      tests,
+      setup_steps: setupSteps,
+      teardown_steps: teardownSteps,
+      artifact_policy: this.buildArtifactPolicy(mergedConfig),
+      runtime_policy: this.buildRuntimePolicy(mergedConfig),
+      allowed_subdomains: allowedSubdomains.length > 0 ? allowedSubdomains : [new URL(baseUrl).host].filter(Boolean),
+    });
+  }
+
+  private mergedSuiteConfig(rawSuite: RawSuiteDocument): Record<string, string | boolean | number | string[]> {
+    const runtime = this.projectConfig.runtime;
+    return {
+      base_url: runtime.base_url,
+      browser: runtime.browser,
+      viewport: runtime.viewport,
+      locale: runtime.locale,
+      capture: runtime.capture,
+      allowed_subdomains: runtime.allowed_subdomains.join(","),
+      default_timeout_ms: runtime.default_timeout_ms,
+      assertion_timeout_ms: runtime.assertion_timeout_ms,
+      locator_resolution_timeout_ms: runtime.locator_resolution_timeout_ms,
+      navigation_timeout_ms: runtime.navigation_timeout_ms,
+      max_retries: runtime.max_retries,
+      retry_on_flake: String(runtime.retry_on_flake),
+      strict_mode: String(runtime.strict_mode),
+      ...rawSuite.config,
+    };
+  }
+
+  private async normalizeTest(
+    _rawSuite: RawSuiteDocument,
+    rawTest: RawTestCase,
+    index: number,
+    resolvedVariables: Record<string, string>,
+  ): Promise<TestCase> {
+    const testId = slugify(rawTest.name) || `test-${index}`;
+    let parsedSteps = [...rawTest.steps];
+    let parsedExpectations = [...rawTest.expectations];
+
+    if (this.config.llm_parse_tests && this.requiresOutlineExtraction(rawTest)) {
+      const outline = await this.llmClient.extractTestOutline(rawTest.name, rawTest.raw_block || rawTest.steps.join("\n"));
+      const outlinedSteps = Array.isArray(outline.steps) ? outline.steps.map((item) => String(item).trim()).filter(Boolean) : [];
+      const outlinedExpectations = Array.isArray(outline.expectations)
+        ? outline.expectations.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+      if (outlinedSteps.length > 0) {
+        parsedSteps = outlinedSteps;
+      }
+      if (outlinedExpectations.length > 0) {
+        parsedExpectations = outlinedExpectations;
+      }
+    }
+
+    const steps = await Promise.all(
+      parsedSteps.map((step, stepIndex) => this.normalizeStepText(step, resolvedVariables, stepIndex + 1)),
+    );
+    const expectations = await Promise.all(
+      parsedExpectations.map((expectation, expectIndex) => this.normalizeExpectationText(expectation, expectIndex + 1)),
+    );
+
+    return {
+      id: testId,
+      name: rawTest.name,
+      description: null,
+      tags: rawTest.tags,
+      preconditions: rawTest.preconditions,
+      steps,
+      expectations,
+      priority: "normal",
+      retry_policy: retryPolicySchema.parse({
+        max_retries: Number(rawTest.retry_policy.max_retries ?? 0),
+        retry_on_flake: this.parseBool(String(rawTest.retry_policy.retry_on_flake ?? "false")),
+      }),
+      timeout_policy: {
+        test_timeout_ms: null,
+        navigation_timeout_ms: null,
+        assertion_timeout_ms: null,
+      },
+      data_binding: null,
+      enabled: true,
+    };
+  }
+
+  private buildRuntimePolicy(config: Record<string, string | boolean | number | string[]>) {
+    const strictValue = config.strict_mode;
+    return runtimePolicySchema.parse({
+      default_timeout_ms: Number(config.default_timeout_ms ?? 10_000),
+      assertion_timeout_ms: Number(config.assertion_timeout_ms ?? 10_000),
+      locator_resolution_timeout_ms: Number(config.locator_resolution_timeout_ms ?? 5_000),
+      navigation_timeout_ms: Number(config.navigation_timeout_ms ?? 30_000),
+      max_retries: Number(config.max_retries ?? 0),
+      retry_on_flake: this.parseBool(String(config.retry_on_flake ?? "false")),
+      strict_mode: strictValue === undefined ? this.config.strict_mode : this.parseBool(String(strictValue)),
+    });
+  }
+
+  private buildArtifactPolicy(config: Record<string, string | boolean | number | string[]>) {
+    const capture = String(config.capture ?? "on-failure").trim().toLowerCase();
+    if (capture === "every-step") {
+      return artifactPolicySchema.parse({ capture_on_step: true, capture_on_failure: true });
+    }
+    if (capture === "off") {
+      return artifactPolicySchema.parse({ capture_on_step: false, capture_on_failure: false });
+    }
+    return artifactPolicySchema.parse({ capture_on_step: false, capture_on_failure: true });
+  }
+
+  private async normalizeStepText(stepText: string, variables: Record<string, string>, _stepIndex: number): Promise<Action> {
+    const resolved = this.interpolateVariables(stepText.trim(), variables);
+    const actionData = this.sanitizeActionPayload(await this.llmClient.normalizeStep(resolved));
+    return actionSchema.parse(actionData);
+  }
+
+  private async normalizeExpectationText(expectationText: string, _expectationIndex: number): Promise<Expectation> {
+    const expectationData = this.sanitizeExpectationPayload(await this.llmClient.normalizeExpectation(expectationText.trim()));
+    return expectationSchema.parse(expectationData);
+  }
+
+  private requiresOutlineExtraction(rawTest: RawTestCase): boolean {
+    return this.config.llm_parse_tests && rawTest.raw_block.trim().length > 0;
+  }
+
+  private sanitizeActionPayload(payload: Record<string, unknown>): Record<string, unknown> {
+    const repaired: Record<string, unknown> = { ...payload };
+    const kind = String(repaired.kind ?? "").trim().toLowerCase();
+    const targetAlias = this.extractTargetAlias(repaired);
+
+    if (
+      [
+        "click",
+        "double_click",
+        "right_click",
+        "hover",
+        "focus",
+        "blur",
+        "fill",
+        "clear",
+        "append_text",
+        "select_option",
+        "check",
+        "uncheck",
+      ].includes(kind) &&
+      repaired.target === undefined
+    ) {
+      const targetPayload = this.coerceTargetPayload(targetAlias);
+      if (targetPayload) {
+        repaired.target = targetPayload;
+      }
+    }
+
+    if (kind === "fill" && repaired.value === undefined) {
+      if (typeof repaired.text === "string") {
+        repaired.value = repaired.text;
+      } else if (typeof repaired.input === "string") {
+        repaired.value = repaired.input;
+      } else if (typeof repaired.key === "string" && !this.looksLikeSelector(repaired.key)) {
+        repaired.value = repaired.key;
+      }
+    }
+
+    for (const alias of ["selector", "locator", "element", "field", "input"]) {
+      delete repaired[alias];
+    }
+
+    if (kind === "fill" && repaired.target && typeof repaired.key === "string" && this.looksLikeSelector(repaired.key)) {
+      delete repaired.key;
+    }
+
+    if (["click", "double_click", "right_click"].includes(kind) && repaired.target && typeof repaired.target === "object") {
+      repaired.target = this.sanitizeClickTarget(repaired.target as Record<string, unknown>);
+    }
+
+    if (kind === "goto") {
+      if (typeof repaired.path === "string" && repaired.url === undefined) {
+        repaired.url = repaired.path;
+      }
+      const readiness = String(repaired.readiness ?? "").trim().toLowerCase();
+      if (!readiness || readiness === "domcontentloaded") {
+        repaired.readiness = "load";
+      }
+    }
+
+    if (kind === "wait_for") {
+      const waitType = String(repaired.wait_type ?? "").trim().toLowerCase();
+      if (["text", "url"].includes(waitType)) {
+        if (typeof repaired.readiness_text === "string" && repaired.value === undefined) {
+          repaired.value = repaired.readiness_text;
+        }
+        if (typeof repaired.text === "string" && repaired.value === undefined) {
+          repaired.value = repaired.text;
+        }
+        if (typeof repaired.url === "string" && repaired.value === undefined) {
+          repaired.value = repaired.url;
+        }
+        if (repaired.readiness_target && typeof repaired.readiness_target === "object" && repaired.value === undefined) {
+          const target = repaired.readiness_target as Record<string, unknown>;
+          const textValue = [target.exact_text, target.human_label, target.label_text, target.placeholder]
+            .map((item) => (typeof item === "string" ? item.trim() : ""))
+            .find(Boolean);
+          if (textValue) {
+            repaired.value = textValue;
+          }
+        }
+      }
+      if (waitType === "timeout" && repaired.duration_ms === undefined) {
+        if (typeof repaired.value === "number") {
+          repaired.duration_ms = repaired.value;
+        } else if (typeof repaired.timeout_ms === "number") {
+          repaired.duration_ms = repaired.timeout_ms;
+        }
+      }
+    }
+
+    return repaired;
+  }
+
+  private sanitizeExpectationPayload(payload: Record<string, unknown>): Record<string, unknown> {
+    const repaired: Record<string, unknown> = { ...payload };
+    const kind = String(repaired.kind ?? "").trim().toLowerCase();
+    if (["text_visible", "text_not_visible"].includes(kind) && !repaired.text) {
+      if (typeof repaired.value === "string") {
+        repaired.text = repaired.value;
+      }
+      if (repaired.target && typeof repaired.target === "object") {
+        const target = repaired.target as Record<string, unknown>;
+        const textValue = [target.exact_text, target.human_label, target.label_text, target.placeholder]
+          .map((item) => (typeof item === "string" ? item.trim() : ""))
+          .find(Boolean);
+        if (textValue) {
+          repaired.text = textValue;
+        }
+        delete repaired.target;
+      }
+    }
+    return repaired;
+  }
+
+  private sanitizeClickTarget(target: Record<string, unknown>): Record<string, unknown> {
+    const result = { ...target };
+    const candidates = [result.exact_text, result.human_label, result.label_text]
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+    const text = candidates[0] ?? "";
+    if (!text) {
+      return result;
+    }
+
+    const quotedButtonMatch = text.match(/^(?:the\s+)?["'](.+)["']\s+button$/iu);
+    if (quotedButtonMatch) {
+      result.role = "button";
+      result.exact_text = quotedButtonMatch[1]?.trim();
+      return result;
+    }
+
+    const plainButtonMatch = text.match(/^(?:the\s+)?(.+?)\s+button$/iu);
+    if (plainButtonMatch) {
+      result.role = "button";
+      result.exact_text = plainButtonMatch[1]?.trim().replace(/^["']|["']$/gu, "");
+      return result;
+    }
+
+    if (typeof result.exact_text === "string") {
+      result.exact_text = result.exact_text.trim().replace(/^["']|["']$/gu, "");
+    }
+    if (typeof result.role !== "string" && text.toLowerCase().includes("button")) {
+      result.role = "button";
+    }
+    return result;
+  }
+
+  private extractTargetAlias(payload: Record<string, unknown>): unknown {
+    if (payload.target !== undefined) {
+      return payload.target;
+    }
+    for (const key of ["selector", "locator", "element", "field", "key", "input"]) {
+      if (payload[key] !== undefined) {
+        return payload[key];
+      }
+    }
+    return undefined;
+  }
+
+  private coerceTargetPayload(source: unknown): TargetHint | undefined {
+    if (source && typeof source === "object") {
+      return source as TargetHint;
+    }
+    if (typeof source !== "string") {
+      return undefined;
+    }
+    const value = source.trim();
+    if (!value) {
+      return undefined;
+    }
+    if (this.looksLikeSelector(value)) {
+      return { css: value, human_label: value, require_visible: true };
+    }
+    return { human_label: value, label_text: value, placeholder: value, require_visible: true };
+  }
+
+  private looksLikeSelector(value: string): boolean {
+    const stripped = value.trim();
+    return ["#", ".", "//", "[", "input", "button", "form"].some((prefix) => stripped.startsWith(prefix)) ||
+      (stripped.includes("=") && !stripped.includes(" ")) ||
+      stripped.includes(">") ||
+      stripped.includes(":");
+  }
+
+  private interpolateVariables(value: string, variables: Record<string, string>): string {
+    let output = value;
+    for (const [key, replacement] of Object.entries(variables)) {
+      output = output.replaceAll(`{{${key}}}`, replacement);
+    }
+    return output;
+  }
+
+  private resolveEnvVariables(variables: Record<string, string>): Record<string, string> {
+    const resolved: Record<string, string> = {};
+    const envPattern = /^(?:\$|env:)([A-Za-z_][A-Za-z0-9_]*)$/u;
+    for (const [key, value] of Object.entries(variables)) {
+      const match = envPattern.exec(value.trim());
+      if (!match) {
+        resolved[key] = value;
+        continue;
+      }
+      const envName = match[1];
+      if (!envName) {
+        resolved[key] = value;
+        continue;
+      }
+      const envValue = process.env[envName];
+      if (envValue === undefined) {
+        throw new SpecNormalizationError(
+          `Environment variable '${envName}' referenced in spec variable '${key}' is not set.`,
+        );
+      }
+      resolved[key] = envValue;
+    }
+    return resolved;
+  }
+
+  private parseBool(value: string): boolean {
+    return ["true", "1", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+}
+
+export async function normalizeMarkdownSuite(options: {
+  rawSuite: RawSuiteDocument;
+  projectConfig: ProjectConfig;
+  config?: NormalizerConfig;
+}): Promise<TestSuite> {
+  const normalizer = new SpecNormalizer({ config: options.config, projectConfig: options.projectConfig });
+  return normalizer.normalize(options.rawSuite);
+}
