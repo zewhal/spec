@@ -25,14 +25,31 @@ const projectRuntimeDefaultsSchema = z
 const projectPathsSchema = z
   .object({
     specs_pattern: z.string().default("tests/**/*.md"),
-    results_dir: z.string().default("artifacts"),
+    results_dir: z.string().default(".spec/results"),
   })
   .strict();
 
 export const projectConfigSchema = z
   .object({
-    paths: projectPathsSchema.default({}),
-    runtime: projectRuntimeDefaultsSchema.default({}),
+    paths: projectPathsSchema.default({
+      specs_pattern: "tests/**/*.md",
+      results_dir: ".spec/results",
+    }),
+    runtime: projectRuntimeDefaultsSchema.default({
+      base_url: "",
+      browser: "chromium",
+      viewport: "desktop",
+      locale: "en-US",
+      capture: "on-failure",
+      allowed_subdomains: [],
+      default_timeout_ms: 10_000,
+      assertion_timeout_ms: 10_000,
+      locator_resolution_timeout_ms: 5_000,
+      navigation_timeout_ms: 30_000,
+      max_retries: 0,
+      retry_on_flake: false,
+      strict_mode: false,
+    }),
   })
   .strict();
 

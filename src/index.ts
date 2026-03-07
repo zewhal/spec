@@ -132,8 +132,9 @@ function requirePositional(positionals: string[], name: string): string {
 }
 
 async function discoverSpecs(startPath: string = process.cwd()): Promise<string[]> {
-  const config = loadProjectConfig(findProjectConfigPath(startPath));
-  const workspace = path.dirname(path.dirname(findProjectConfigPath(startPath)));
+  const configPath = findProjectConfigPath(startPath);
+  const config = loadProjectConfig(configPath);
+  const workspace = existsSync(configPath) ? path.dirname(path.dirname(configPath)) : process.cwd();
   const matches = Array.from(new Bun.Glob(config.paths.specs_pattern).scanSync({ cwd: workspace, absolute: true }));
   return matches.sort();
 }
