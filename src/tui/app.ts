@@ -7,7 +7,8 @@ import blessed from "neo-blessed";
 import { findProjectConfigPath, loadProjectConfig } from "../config";
 import type { ExecutionEvent } from "../runtime/events";
 import { EventBus } from "../runtime/events";
-import { defaultCompiledOutputPath, fileSha256, compiledPlanIsFresh, writeCompiledPlan } from "../runtime/persistence";
+import { SuiteExecutor } from "../runtime/executor";
+import { defaultCompiledOutputPath, fileSha256, compiledPlanIsFresh, persistSuiteOutputs, writeCompiledPlan } from "../runtime/persistence";
 import { loadMarkdown } from "../parser/markdown-loader";
 import { parseMarkdownToRaw } from "../parser/markdown-parser";
 import { SpecNormalizer } from "../parser/normalizer";
@@ -43,6 +44,9 @@ export async function runTui(specs: string[]): Promise<void> {
     modeLabel: "Compile + Run",
   };
   const logLines: string[] = [];
+  let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
+  let spinnerActive = false;
+  let spinnerFrameIndex = 0;
 
   const header = blessed.box({ top: 0, left: 0, width: "100%", height: 3, content: " spec - Markdown -> Runtime -> Bun ", tags: false, style: { fg: "white", bg: "blue" } });
   const footer = blessed.box({ bottom: 0, left: 0, width: "100%", height: 1, content: " r run  h headless  c compile-only  q quit ", style: { fg: "white", bg: "gray" } });
@@ -74,9 +78,46 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   function appendLog(message: string): void {
+    spinnerActive = false;
+    stopSpinner();
     logLines.push(message);
     logBox.log(message);
     screen.render();
+  }
+
+  function updateSpinnerLine(): void {
+    const frame = ["[|]", "[/]", "[-]", "[\\]"][spinnerFrameIndex % 4] ?? "[|]";
+    spinnerFrameIndex += 1;
+    const line = `${frame} Running...`;
+    if (spinnerActive && logLines.length > 0) {
+      logLines[logLines.length - 1] = line;
+    } else {
+      logLines.push(line);
+      spinnerActive = true;
+    }
+    logBox.setContent(logLines.join("\n"));
+    screen.render();
+    scheduleSpinner();
+  }
+
+  function scheduleSpinner(): void {
+    if (!spinnerActive) {
+      return;
+    }
+    stopSpinner();
+    spinnerTimer = setTimeout(updateSpinnerLine, 120);
+  }
+
+  function startSpinner(): void {
+    spinnerActive = true;
+    updateSpinnerLine();
+  }
+
+  function stopSpinner(): void {
+    if (spinnerTimer) {
+      clearTimeout(spinnerTimer);
+      spinnerTimer = null;
+    }
   }
 
   function copyLog(): void {
@@ -139,6 +180,7 @@ export async function runTui(specs: string[]): Promise<void> {
     const compiledPath = defaultCompiledOutputPath(findProjectConfigPath(specPath), specPath);
     appendLog(`Starting: ${path.basename(specPath)}`);
     appendLog(`Mode: ${state.modeLabel}`);
+    spinnerFrameIndex = 0;
 
     eventBus.subscribe({
       onEvent(event: ExecutionEvent) {
@@ -219,12 +261,26 @@ export async function runTui(specs: string[]): Promise<void> {
         return;
       }
 
-      appendLog("Execution engine parity is not complete yet. Current Bun runner is not allowed to claim a real browser pass.");
-      throw new Error("Real Playwright execution is not implemented yet in spec. The suite was compiled, but not truly executed.");
+      startSpinner();
+      const executor = new SuiteExecutor({ eventBus });
+      const result = await executor.runSuite(suite, {
+        output_dir: projectConfig.paths.results_dir,
+        headless: state.headless,
+      });
+      const persistedPaths = await persistSuiteOutputs(result, projectConfig.paths.results_dir, compiledPath);
+      appendLog(`Completed! Status: ${result.status}`);
+      appendLog(`Artifacts: ${result.artifacts_root}`);
+      appendLog(`Result JSON: ${persistedPaths.result_json}`);
+      appendLog(`Report MD: ${persistedPaths.report_md}`);
+      appendLog(`Report HTML: ${persistedPaths.report_html}`);
+      appendLog(`Summary JSON: ${persistedPaths.summary_json}`);
     } catch (error) {
       appendLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
       state.status = "completed";
       renderStatus();
+    } finally {
+      spinnerActive = false;
+      stopSpinner();
     }
   }
 

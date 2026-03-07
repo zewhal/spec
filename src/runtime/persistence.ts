@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import type { SuiteResult } from "../models/result";
 import type { TestSuite } from "../models/suite";
+import { writeHtmlReport, writeJsonReport, writeMarkdownReport } from "../reporting";
 
 const compiledPlanMetadataSchema = {
   key: "_spec",
@@ -78,4 +80,55 @@ export function compiledPlanIsFresh(compiledPath: string, sourceSpec: string): b
   }
 
   return path.resolve(sourceSpecPath) === path.resolve(sourceSpec) && sourceHash === fileSha256(sourceSpec);
+}
+
+export async function writeResultIndex(options: {
+  result: SuiteResult;
+  compiledPath?: string;
+  resultJsonPath: string;
+  markdownReportPath: string;
+  htmlReportPath: string;
+  suiteOutputDir: string;
+}): Promise<string> {
+  const payload = {
+    suite_id: options.result.suite_id,
+    suite_name: options.result.suite_name,
+    status: options.result.status,
+    duration_ms: options.result.duration_ms,
+    artifacts_root: options.result.artifacts_root,
+    compiled_plan: options.compiledPath ? path.resolve(options.compiledPath) : null,
+    result_json: path.resolve(options.resultJsonPath),
+    report_markdown: path.resolve(options.markdownReportPath),
+    report_html: path.resolve(options.htmlReportPath),
+    tests: options.result.tests,
+  };
+  const manifestPath = path.join(options.suiteOutputDir, "summary.json");
+  await Bun.write(manifestPath, JSON.stringify(payload, null, 2));
+  return manifestPath;
+}
+
+export async function persistSuiteOutputs(result: SuiteResult, outputRoot: string, compiledPath?: string): Promise<Record<string, string>> {
+  const suiteOutputDir = path.join(outputRoot, result.suite_id);
+  mkdirSync(suiteOutputDir, { recursive: true });
+  const jsonPath = path.join(suiteOutputDir, "result.json");
+  const mdPath = path.join(suiteOutputDir, "report.md");
+  const htmlPath = path.join(suiteOutputDir, "report.html");
+  await writeJsonReport(result, jsonPath);
+  await writeMarkdownReport(result, mdPath);
+  await writeHtmlReport(result, htmlPath);
+  const summaryPath = await writeResultIndex({
+    result,
+    compiledPath,
+    resultJsonPath: jsonPath,
+    markdownReportPath: mdPath,
+    htmlReportPath: htmlPath,
+    suiteOutputDir,
+  });
+  return {
+    suite_dir: suiteOutputDir,
+    result_json: jsonPath,
+    report_md: mdPath,
+    report_html: htmlPath,
+    summary_json: summaryPath,
+  };
 }
