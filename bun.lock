@@ -8,6 +8,7 @@
         "@clack/prompts": "^1.1.0",
         "@inquirer/prompts": "^8.3.0",
         "markdown-it": "^14.1.1",
+        "neo-blessed": "^0.2.0",
         "picocolors": "^1.1.1",
         "slugify": "^1.6.6",
         "smol-toml": "^1.6.0",
@@ -87,6 +88,8 @@
     "mdurl": ["mdurl@2.0.0", "", {}, "sha512-Lf+9+2r+Tdp5wXDXC4PcIBjTDtq4UKjCPMQhKIuzpJNW0b96kVqSwW0bT7FhRSfmAiFYgP+SCRvdrDozfh0U5w=="],
 
     "mute-stream": ["mute-stream@3.0.0", "", {}, "sha512-dkEJPVvun4FryqBmZ5KhDo0K9iDXAwn08tMLDinNdRBNPcYEDiWYysLcc6k3mjTMlbP9KyylvRpd4wFtwrT9rw=="],
+
+    "neo-blessed": ["neo-blessed@0.2.0", "", { "bin": { "neo-blessed": "./bin/tput.js" } }, "sha512-C2kC4K+G2QnNQFXUIxTQvqmrdSIzGTX1ZRKeDW6ChmvPRw8rTkTEJzbEQHiHy06d36PCl/yMOCjquCRV8SpSQw=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 
