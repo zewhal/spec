@@ -22,6 +22,7 @@ export type NormalizerConfig = {
   llm_parse_tests?: boolean;
   on_llm_call?: (prompt: string, response: Record<string, unknown>) => void;
   on_authoring_mode_detected?: (info: { test_name: string; authoring_mode: "auto" | "fixed" | "freeflow" }) => void;
+  on_deterministic_step?: (info: { test_name: string; step_text: string }) => void;
 };
 
 const defaultNormalizerConfig: Required<NormalizerConfig> = {
@@ -33,6 +34,7 @@ const defaultNormalizerConfig: Required<NormalizerConfig> = {
   llm_parse_tests: true,
   on_llm_call: () => {},
   on_authoring_mode_detected: () => {},
+  on_deterministic_step: () => {},
 };
 
 export class SpecNormalizer {
@@ -171,12 +173,16 @@ export class SpecNormalizer {
       }
     }
 
-    const steps = await Promise.all(
-      parsedSteps.map((step, stepIndex) => this.normalizeStepText(step, resolvedVariables, stepIndex + 1)),
-    );
-    const expectations = await Promise.all(
-      parsedExpectations.map((expectation, expectIndex) => this.normalizeExpectationText(expectation, expectIndex + 1)),
-    );
+    const steps =
+      authoringMode === "fixed"
+        ? parsedSteps.map((step, stepIndex) => this.normalizeFixedStepText(rawTest.name, step, resolvedVariables, stepIndex + 1))
+        : await Promise.all(parsedSteps.map((step, stepIndex) => this.normalizeStepText(step, resolvedVariables, stepIndex + 1)));
+    const expectations =
+      authoringMode === "fixed"
+        ? parsedExpectations.map((expectation, expectIndex) => this.normalizeFixedExpectationText(expectation, expectIndex + 1))
+        : await Promise.all(
+            parsedExpectations.map((expectation, expectIndex) => this.normalizeExpectationText(expectation, expectIndex + 1)),
+          );
 
     return {
       id: testId,
@@ -231,9 +237,125 @@ export class SpecNormalizer {
     return actionSchema.parse(actionData);
   }
 
+  private normalizeFixedStepText(testName: string, stepText: string, variables: Record<string, string>, stepIndex: number): Action {
+    const resolved = this.interpolateVariables(stepText.trim(), variables);
+    this.config.on_deterministic_step({ test_name: testName, step_text: resolved });
+
+    const gotoMatch = resolved.match(/^navigate to\s+(.+)$/iu);
+    if (gotoMatch?.[1]) {
+      return actionSchema.parse({
+        id: `step-${stepIndex}`,
+        kind: "goto",
+        url: gotoMatch[1].trim(),
+        readiness: "load",
+      });
+    }
+
+    const waitTimeoutMatch = resolved.match(/^wait for timeout\s+(\d+)$/iu);
+    if (waitTimeoutMatch?.[1]) {
+      return actionSchema.parse({
+        id: `step-${stepIndex}`,
+        kind: "wait_for",
+        wait_type: "timeout",
+        duration_ms: Number(waitTimeoutMatch[1]),
+      });
+    }
+
+    const waitTextMatch = resolved.match(/^wait for text\s+"(.+)"$/iu);
+    if (waitTextMatch?.[1]) {
+      return actionSchema.parse({
+        id: `step-${stepIndex}`,
+        kind: "wait_for",
+        wait_type: "text",
+        value: waitTextMatch[1],
+      });
+    }
+
+    const clickQuotedMatch = resolved.match(/^click(?: the)?\s+"(.+)"(?:\s+button)?$/iu);
+    if (clickQuotedMatch?.[1]) {
+      return actionSchema.parse({
+        id: `step-${stepIndex}`,
+        kind: "click",
+        target: {
+          exact_text: clickQuotedMatch[1],
+          human_label: clickQuotedMatch[1],
+          role: "button",
+          require_visible: true,
+        },
+      });
+    }
+
+    const fillMatch = resolved.match(/^fill\s+(.+?)\s+with\s+"(.+)"$/iu);
+    if (fillMatch?.[1] && fillMatch?.[2]) {
+      return actionSchema.parse({
+        id: `step-${stepIndex}`,
+        kind: "fill",
+        target: {
+          human_label: fillMatch[1].trim(),
+          label_text: fillMatch[1].trim(),
+          placeholder: fillMatch[1].trim(),
+          require_visible: true,
+        },
+        value: fillMatch[2],
+      });
+    }
+
+    return actionSchema.parse({
+      id: `step-${stepIndex}`,
+      kind: "comment",
+      text: resolved,
+    });
+  }
+
   private async normalizeExpectationText(expectationText: string, _expectationIndex: number): Promise<Expectation> {
     const expectationData = this.sanitizeExpectationPayload(await this.llmClient.normalizeExpectation(expectationText.trim()));
     return expectationSchema.parse(expectationData);
+  }
+
+  private normalizeFixedExpectationText(expectationText: string, expectationIndex: number): Expectation {
+    const resolved = expectationText.trim();
+    const lower = resolved.toLowerCase();
+
+    if (lower.startsWith("url should contain ")) {
+      return expectationSchema.parse({
+        id: `expect-${expectationIndex}`,
+        kind: "url_contains",
+        value: resolved.slice("URL should contain ".length),
+      });
+    }
+
+    if (lower.startsWith("url should be ")) {
+      return expectationSchema.parse({
+        id: `expect-${expectationIndex}`,
+        kind: "url_is",
+        value: resolved.slice("URL should be ".length),
+      });
+    }
+
+    const textVisibleMatch = resolved.match(/^text\s+"(.+)"\s+should be visible$/iu);
+    if (textVisibleMatch?.[1]) {
+      return expectationSchema.parse({
+        id: `expect-${expectationIndex}`,
+        kind: "text_visible",
+        text: textVisibleMatch[1],
+      });
+    }
+
+    const requestSeenMatch = resolved.match(/^a request\s+(\w+)\s+(.+)\s+should happen$/iu);
+    if (requestSeenMatch?.[1] && requestSeenMatch?.[2]) {
+      return expectationSchema.parse({
+        id: `expect-${expectationIndex}`,
+        kind: "request_seen",
+        method: requestSeenMatch[1].toUpperCase(),
+        path: requestSeenMatch[2].trim(),
+      });
+    }
+
+    return expectationSchema.parse({
+      id: `expect-${expectationIndex}`,
+      kind: "text_visible",
+      text: resolved,
+    });
   }
 
   private requiresOutlineExtraction(rawTest: RawTestCase, authoringMode: "auto" | "fixed" | "freeflow"): boolean {

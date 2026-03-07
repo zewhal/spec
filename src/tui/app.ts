@@ -469,6 +469,14 @@ export async function runTui(specs: string[]): Promise<void> {
               render();
             }
           },
+          on_deterministic_step: ({ test_name, step_text }) => {
+            logEntries.push({
+              kind: "result-info",
+              title: `Deterministic fixed step in "${testNameShort(test_name)}"`,
+              body: `No LLM call was needed for this step.\n\n${step_text}`,
+            });
+            render();
+          },
           on_llm_call: (prompt, response) => {
             setSpinner("Waiting for LLM...");
             logEntries.push({ kind: "llm-prompt", title: `Prompt: ${prompt.slice(0, 80)}...`, body: prompt });
@@ -594,6 +602,10 @@ export async function runTui(specs: string[]): Promise<void> {
   });
 
   render();
+}
+
+function testNameShort(name: string): string {
+  return name.length > 42 ? `${name.slice(0, 39)}...` : name;
 }
 
 function stripCompiledMetadata(payload: unknown): unknown {
