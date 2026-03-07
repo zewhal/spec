@@ -59,20 +59,20 @@ export async function runTui(specs: string[]): Promise<void> {
   const introBackdrop = blessed.box({ top: 3, left: 0, width: "100%", bottom: 1, style: { bg: "#07111b" } });
 
   const introBox = blessed.box({
-    top: 5,
+    top: 4,
     left: "center",
-    width: "84%",
-    height: "78%-1",
+    width: "74%",
+    height: 21,
     border: "line",
     label: " Launch Pad ",
     tags: true,
     style: { fg: "#f0f4f8", bg: "#0c1824", border: { fg: "#3aaed8" } },
   });
 
-  const heroBox = blessed.box({ top: 1, left: 2, width: "56%", height: 16, parent: introBox, tags: true, style: { fg: "#f0f4f8", bg: "#0c1824" } });
-  const statsBox = blessed.box({ top: 1, right: 2, width: "24%", height: 16, parent: introBox, tags: true, border: "line", label: " Stats ", style: { fg: "#d9e2ec", bg: "#10202d", border: { fg: "#4cc9f0" } } });
-  const actionsBox = blessed.box({ top: 18, left: 2, width: "38%", height: 12, parent: introBox, tags: true, border: "line", label: " Quick Start ", style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#7bdff2" } } });
-  const recentBox = blessed.box({ top: 18, left: "40%", width: "58%-2", height: 12, parent: introBox, tags: true, border: "line", label: " Last Run ", style: { fg: "#d9e2ec", bg: "#09131d", border: { fg: "#7bdff2" } } });
+  const heroBox = blessed.box({ top: 1, left: 2, width: "60%-1", height: 10, parent: introBox, tags: true, style: { fg: "#f0f4f8", bg: "#0c1824" } });
+  const statsBox = blessed.box({ top: 1, right: 2, width: "34%-1", height: 10, parent: introBox, tags: true, border: "line", label: " Stats ", style: { fg: "#d9e2ec", bg: "#10202d", border: { fg: "#4cc9f0" } } });
+  const actionsBox = blessed.box({ top: 11, left: 2, width: "28%-1", height: 8, parent: introBox, tags: true, border: "line", label: " Keys ", style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#7bdff2" } } });
+  const recentBox = blessed.box({ top: 11, left: "30%", width: "68%-2", height: 8, parent: introBox, tags: true, border: "line", label: " Last Run ", style: { fg: "#d9e2ec", bg: "#09131d", border: { fg: "#7bdff2" } } });
 
   const runnerShell = blessed.box({ top: 3, left: 0, width: "100%", bottom: 1, hidden: true });
   const specsPanel = blessed.list({ top: 0, left: 0, width: "30%", bottom: 0, parent: runnerShell, keys: true, vi: true, border: "line", label: " Specs ", items: specs.map((spec) => path.basename(spec)), style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#315f7d" }, selected: { bg: "#56c1ff", fg: "black" } } });
@@ -82,19 +82,28 @@ export async function runTui(specs: string[]): Promise<void> {
   function introContent(): void {
     const pulseColor = ["#4cc9f0", "#7bdff2", "#c8f7ff", "#7bdff2"][introPulse % 4] ?? "#4cc9f0";
     header.setContent(` {bold}spec{/bold} {gray-fg}- Markdown -> Runtime -> Bun{/gray-fg} {right}{${pulseColor}-fg}live{/}`);
+    const compact = (screen.width as number) < 110 || (screen.height as number) < 30;
     heroBox.setContent([
       "",
-      ` {${pulseColor}-fg}  _____ ____  ______ _____{/}`,
-      ` {${pulseColor}-fg} / ___// __ \\/ ____// ___/{/}`,
-      ` {${pulseColor}-fg} \__ \\/ /_/ / __/   \__ \\ {/}`,
-      ` {${pulseColor}-fg}___/ / ____/ /___  ___/ /{/}`,
-      ` {${pulseColor}-fg}/____/_/   /_____//____/ {/}`,
-      "",
-      " {bold}Launch markdown specs into LLM-guided Playwright runs{/bold}",
-      "",
-      " Spec feels best when it opens like a tool, not a menu.",
-      " This screen is your staging area before execution.",
-      "",
+      ...(compact
+        ? [
+            ` {${pulseColor}-fg}{bold}SPEC{/bold}{/}`,
+            "",
+            " {bold}Markdown -> LLM -> Playwright{/bold}",
+            "",
+            " Open the runner, pick a spec, and execute.",
+          ]
+        : [
+            ` {${pulseColor}-fg}  _____ ____  ______ _____{/}`,
+            ` {${pulseColor}-fg} / ___// __ \\/ ____// ___/{/}`,
+            ` {${pulseColor}-fg} \__ \\/ /_/ / __/   \__ \\ {/}`,
+            ` {${pulseColor}-fg}___/ / ____/ /___  ___/ /{/}`,
+            ` {${pulseColor}-fg}/____/_/   /_____//____/ {/}`,
+            "",
+            " {bold}Launch markdown specs into LLM-guided Playwright runs{/bold}",
+            "",
+            " Spec feels best when it opens like a tool, not a menu.",
+          ]),
       ` {gray-fg}Current mode{/gray-fg}: ${state.modeLabel}`,
       ` {gray-fg}Browser{/gray-fg}: ${state.headless ? "Headless" : "Headful"}`,
     ].join("\n"));
@@ -113,19 +122,18 @@ export async function runTui(specs: string[]): Promise<void> {
     ].join("\n"));
     actionsBox.setContent([
       "",
-      " {bold}enter{/bold} open the runner",
-      " {bold}h{/bold}     toggle browser mode",
-      " {bold}c{/bold}     switch compile-only mode",
-      " {bold}y{/bold}     copy/export execution logs",
-      " {bold}esc{/bold}   return here from runner",
+      " {bold}enter{/bold} open",
+      " {bold}h{/bold}     browser",
+      " {bold}c{/bold}     mode",
+      " {bold}y{/bold}     logs",
+      " {bold}esc{/bold}   home",
       " {bold}q{/bold}     quit",
     ].join("\n"));
     recentBox.setContent([
       "",
       ` ${lastRunSummary}`,
       "",
-      " Runs update here after each suite finishes.",
-      " Use this as a quick confidence panel before jumping back in.",
+      " Updated after each suite run.",
     ].join("\n"));
   }
 
