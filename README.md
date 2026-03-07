@@ -31,11 +31,17 @@ bun run spec
 
 ## Workflow
 
-- `bun run spec` lists discovered markdown specs, like Ahente's default entry flow.
+- `bun run spec` opens an interactive picker for discovered markdown specs.
 - `bun run spec init` creates `.spec/spec.toml` and `.spec/results/`.
 - `bun run spec compile tests/specs/example.md` writes `.spec/compiled/<name>.json`.
 - `bun run spec run tests/specs/example.md` writes suite artifacts to `.spec/results/<suite-id>/`.
 - `bun run spec report .spec/results/<suite-id>/result.json --format markdown` regenerates reports.
+
+Inside the interactive runner you can:
+
+- choose a markdown file
+- run `Compile + Run`
+- run `Compile Only`
 
 ## Output Layout
 
