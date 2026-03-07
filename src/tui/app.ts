@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import blessed from "neo-blessed";
 
@@ -10,8 +11,6 @@ import { defaultCompiledOutputPath, fileSha256, compiledPlanIsFresh, writeCompil
 import { loadMarkdown } from "../parser/markdown-loader";
 import { parseMarkdownToRaw } from "../parser/markdown-parser";
 import { SpecNormalizer } from "../parser/normalizer";
-import type { SuiteResult } from "../models/result";
-import { renderMarkdownReport, renderHtmlReport, writeJsonReport } from "../reporting";
 
 type TestState = {
   name: string;
@@ -78,6 +77,47 @@ export async function runTui(specs: string[]): Promise<void> {
     logLines.push(message);
     logBox.log(message);
     screen.render();
+  }
+
+  function copyLog(): void {
+    if (logLines.length === 0) {
+      appendLog("No execution log to copy yet.");
+      return;
+    }
+
+    const logText = `${logLines.join("\n").trim()}\n`;
+    const logPath = writeLogSnapshot(logText);
+    const copied = copyToClipboard(logText);
+    appendLog(copied ? `Copied execution log to clipboard and saved ${logPath}` : `Clipboard unavailable. Saved execution log to ${logPath}`);
+  }
+
+  function writeLogSnapshot(logText: string): string {
+    const timestamp = new Date().toISOString().replaceAll(":", "-");
+    const logDir = path.join(".spec", "logs");
+    mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, `execution-${timestamp}.log`);
+    Bun.write(logPath, logText);
+    return logPath;
+  }
+
+  function copyToClipboard(text: string): boolean {
+    const commands = [
+      ["wl-copy"],
+      ["xclip", "-selection", "clipboard"],
+      ["xsel", "--clipboard", "--input"],
+    ];
+
+    for (const command of commands) {
+      const binary = command[0];
+      if (!binary) {
+        continue;
+      }
+      const result = spawnSync(binary, command.slice(1), { input: text, encoding: "utf8" });
+      if (!result.error && result.status === 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async function executeSelected(): Promise<void> {
@@ -172,9 +212,8 @@ export async function runTui(specs: string[]): Promise<void> {
         return;
       }
 
-      const result = await simulateSuiteRun(suite, projectConfig.paths.results_dir, eventBus);
-      appendLog(`Completed! Status: ${result.status}`);
-      appendLog(`Artifacts: ${result.artifacts_root}`);
+      appendLog("Execution engine parity is not complete yet. Current Bun runner is not allowed to claim a real browser pass.");
+      throw new Error("Real Playwright execution is not implemented yet in spec. The suite was compiled, but not truly executed.");
     } catch (error) {
       appendLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
       state.status = "completed";
@@ -202,92 +241,9 @@ export async function runTui(specs: string[]): Promise<void> {
   screen.key(["r"], () => {
     void executeSelected();
   });
+  screen.key(["y"], () => {
+    copyLog();
+  });
 
   screen.render();
-}
-
-async function simulateSuiteRun(suite: any, outputRoot: string, eventBus: EventBus): Promise<SuiteResult> {
-  const startedAt = new Date();
-  const tests: SuiteResult["tests"] = [];
-  eventBus.emitEvent("suite_started", { suite_id: suite.id, suite_name: suite.name, test_count: suite.tests.length });
-
-  for (const test of suite.tests) {
-    const testStart = new Date();
-    eventBus.emitEvent("test_started", { suite_id: suite.id, test_id: test.id, test_name: test.name });
-    for (const step of test.steps) {
-      eventBus.emitEvent("step_started", { suite_id: suite.id, test_id: test.id, step_id: step.id ?? step.kind, action_kind: step.kind, phase: "step" });
-    }
-    const testFinished = new Date();
-    const durationMs = testFinished.getTime() - testStart.getTime();
-    eventBus.emitEvent("test_finished", { suite_id: suite.id, test_id: test.id, test_name: test.name, status: "passed", duration_ms: durationMs });
-    tests.push({
-      suite_id: suite.id,
-      test_id: test.id,
-      test_name: test.name,
-      started_at: testStart.toISOString(),
-      finished_at: testFinished.toISOString(),
-      duration_ms: durationMs,
-      status: "passed" as const,
-      steps: test.steps.map((step: any) => ({
-        step_id: step.id ?? step.kind,
-        action_kind: step.kind,
-        started_at: testStart.toISOString(),
-        finished_at: testFinished.toISOString(),
-        duration_ms: 0,
-        status: "passed" as const,
-        failure_class: null,
-        message: null,
-        url_before: null,
-        url_after: suite.base_url,
-        screenshot_path: null,
-        resolver_decision: null,
-      })),
-      expectations: test.expectations.map((expectation: any) => ({
-        expectation_id: expectation.id ?? expectation.kind,
-        kind: expectation.kind,
-        status: "passed" as const,
-        started_at: testStart.toISOString(),
-        finished_at: testFinished.toISOString(),
-        duration_ms: 0,
-        failure_class: null,
-        message: null,
-        soft: Boolean(expectation.soft),
-      })),
-      artifacts: [],
-      warnings: [],
-      console_messages: [],
-      page_errors: [],
-      requests: [],
-      responses: [],
-      final_url: suite.base_url,
-    });
-  }
-
-  const finishedAt = new Date();
-  const suiteDir = path.join(outputRoot, suite.id);
-  mkdirSync(suiteDir, { recursive: true });
-  const result: SuiteResult = {
-    suite_id: suite.id,
-    suite_name: suite.name,
-    started_at: startedAt.toISOString(),
-    finished_at: finishedAt.toISOString(),
-    duration_ms: finishedAt.getTime() - startedAt.getTime(),
-    status: "passed" as const,
-    tests,
-    warnings: [],
-    artifacts_root: suiteDir,
-  };
-  await writeJsonReport(result, path.join(suiteDir, "result.json"));
-  await Bun.write(path.join(suiteDir, "report.md"), renderMarkdownReport(result));
-  await Bun.write(path.join(suiteDir, "report.html"), renderHtmlReport(result));
-  await Bun.write(path.join(suiteDir, "summary.json"), JSON.stringify({ suite: suite.name, status: result.status, artifacts_root: suiteDir }, null, 2));
-  eventBus.emitEvent("suite_finished", {
-    suite_id: suite.id,
-    suite_name: suite.name,
-    status: "passed",
-    duration_ms: result.duration_ms,
-    passed_count: tests.length,
-    failed_count: 0,
-  });
-  return result;
 }
