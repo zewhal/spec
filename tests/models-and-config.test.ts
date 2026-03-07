@@ -52,7 +52,7 @@ test("execution event types include suite lifecycle events", () => {
   expect(executionEventTypes).toContain("suite_finished");
 });
 
-test("findProjectConfigPath prefers .spec and falls back to legacy config", async () => {
+test("findProjectConfigPath resolves .spec config", async () => {
   const tempRoot = await Bun.$`mktemp -d`.text();
   const workspace = tempRoot.trim();
   const nested = path.join(workspace, "tests", "specs");
