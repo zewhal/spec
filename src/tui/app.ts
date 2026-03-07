@@ -8,17 +8,9 @@ import {
   SelectRenderable,
   SelectRenderableEvents,
   TextRenderable,
-  StyledText,
-  brightCyan,
-  brightGreen,
-  brightRed,
-  brightYellow,
-  dim,
-  stringToStyledText,
   createCliRenderer,
   instantiate,
   type KeyEvent,
-  type TextChunk,
 } from "@opentui/core";
 
 import { findProjectConfigPath, loadProjectConfig } from "../config";
@@ -129,7 +121,7 @@ export async function runTui(specs: string[]): Promise<void> {
   });
 
   const statusText = new TextRenderable(renderer, { content: "", fg: "#f0f4f8" });
-  const logText = new TextRenderable(renderer, { content: stringToStyledText(""), fg: "#d9e2ec" });
+  const logFeed = instantiate(renderer, Box({ id: "log-feed", width: "100%", flexDirection: "column", gap: 1 }));
 
   const runnerViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "row", gap: 1 },
@@ -154,7 +146,7 @@ export async function runTui(specs: string[]): Promise<void> {
     rootOptions: { backgroundColor: "#08121b", padding: 1 },
   });
   statusScroll.add(statusText);
-  logScroll.add(logText);
+  logScroll.add(logFeed);
   runnerView.findDescendantById("status-scroll-host")?.add(statusScroll);
   runnerView.findDescendantById("log-host")?.add(logScroll);
   body?.add(introView);
@@ -190,7 +182,7 @@ export async function runTui(specs: string[]): Promise<void> {
     setText(introRecent, state.lastRunSummary);
 
     setText(statusText, renderStatusText());
-    logText.content = renderStyledLogText();
+    rebuildLogFeed();
 
     if (state.view === "intro") {
       body?.remove(runnerView.id);
@@ -237,92 +229,66 @@ export async function runTui(specs: string[]): Promise<void> {
     return lines.join("\n");
   }
 
-  function renderStyledLogText(): StyledText {
+  function rebuildLogFeed(): void {
+    clearChildren(logFeed);
+
     if (logEntries.length === 0) {
-      return stringToStyledText("No logs yet. Start a run to see live execution output.");
+      logFeed.add(new TextRenderable(renderer, { content: "No logs yet. Start a run to see live execution output.", fg: "#94a3b8" }));
+      return;
     }
 
-    const parts: Array<string | TextChunk | StyledText> = [];
-    for (const [index, entry] of logEntries.entries()) {
-      parts.push(renderStyledEntry(entry));
-      if (index < logEntries.length - 1) {
-        parts.push("\n\n");
-      }
+    for (const entry of logEntries) {
+      const alignRight = entry.kind === "llm-prompt";
+      const row = instantiate(
+        renderer,
+        Box({ width: "100%", flexDirection: "row", justifyContent: alignRight ? "flex-end" : "flex-start" }),
+      );
+      const rowBody = instantiate(renderer, Box({ width: "94%", marginBottom: 1 }));
+      const message = new TextRenderable(renderer, {
+        content: renderEntry(entry),
+        fg: colorForEntry(entry.kind),
+        width: "100%",
+      });
+      rowBody.add(message);
+      row.add(rowBody);
+      logFeed.add(row);
     }
-    return concatStyled(parts);
   }
 
-  function renderStyledEntry(entry: LogEntry): StyledText {
-    if (entry.kind === "llm-prompt") {
-      const body = entry.body ?? entry.title;
-      const lines = [entry.title, "", ...body.split("\n")];
-      const aligned = alignRightBlock(lines);
-      return concatStyled([brightYellow("YOU -> LLM"), "\n", aligned]);
+  function clearChildren(target: { getChildren(): Array<{ id: string }>; remove(id: string): void }): void {
+    for (const child of target.getChildren()) {
+      target.remove(child.id);
+    }
+  }
+
+  function colorForEntry(kind: LogEntryKind): string {
+    switch (kind) {
+      case "llm-prompt":
+        return "#fde047";
+      case "llm-json":
+        return "#67e8f9";
+      case "result-pass":
+        return "#86efac";
+      case "result-fail":
+        return "#fca5a5";
+      case "result-info":
+        return "#93c5fd";
+      default:
+        return "#cbd5e1";
+    }
+  }
+
+  function renderEntry(entry: LogEntry): string {
+    const header = `${entryBadge(entry.kind)} ${entry.title}`;
+    if (!entry.body || entry.body === entry.title) {
+      return header;
     }
 
     if (entry.kind === "llm-json") {
-      const jsonBody = prettyJson(entry.body ?? "{}");
-      return concatStyled([brightCyan("LLM -> SPEC"), "\n", "```json\n", jsonBody, "\n```"]);
+      return `${header}\n\n${prettyJson(entry.body)}`;
     }
 
-    if (entry.kind === "result-pass") {
-      return concatStyled([brightGreen("PASS"), ` ${entry.title}`, entry.body ? `\n${entry.body}` : ""]);
-    }
-
-    if (entry.kind === "result-fail") {
-      return concatStyled([brightRed("FAIL"), ` ${entry.title}`, entry.body ? `\n${entry.body}` : ""]);
-    }
-
-    if (entry.kind === "result-info") {
-      return concatStyled([brightCyan("INFO"), ` ${entry.title}`, entry.body ? `\n${entry.body}` : ""]);
-    }
-
-    return concatStyled([dim("LOG"), ` ${entry.title}`, entry.body && entry.body !== entry.title ? `\n${entry.body}` : ""]);
-  }
-
-  function alignRightBlock(lines: string[]): string {
-    const width = estimateLogPaneWidth();
-    return lines
-      .flatMap((line) => wrapLine(line, width))
-      .map((line) => `${" ".repeat(Math.max(0, width - line.length))}${line}`)
-      .join("\n");
-  }
-
-  function estimateLogPaneWidth(): number {
-    const columns = Number(process.stdout.columns ?? 120);
-    const reserved = 36;
-    return Math.max(36, columns - reserved);
-  }
-
-  function wrapLine(value: string, width: number): string[] {
-    if (value.length <= width) {
-      return [value];
-    }
-
-    const chunks: string[] = [];
-    let remaining = value;
-    while (remaining.length > width) {
-      chunks.push(remaining.slice(0, width));
-      remaining = remaining.slice(width);
-    }
-    if (remaining.length > 0) {
-      chunks.push(remaining);
-    }
-    return chunks;
-  }
-
-  function concatStyled(parts: Array<string | TextChunk | StyledText>): StyledText {
-    const chunks: TextChunk[] = [];
-    for (const part of parts) {
-      if (typeof part === "string") {
-        chunks.push(...stringToStyledText(part).chunks);
-      } else if (part instanceof StyledText) {
-        chunks.push(...part.chunks);
-      } else {
-        chunks.push(part);
-      }
-    }
-    return new StyledText(chunks);
+    return `${header}\n\n${entry.body}`;
   }
 
   function entryBadge(kind: LogEntryKind): string {
