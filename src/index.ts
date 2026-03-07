@@ -179,9 +179,18 @@ function serializeSuites(suites: TestSuite[]): unknown {
 function loadCompiledSuites(filePath: string): TestSuite[] {
   const payload = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
   if (Array.isArray(payload.suites)) {
-    return payload.suites.map((suite) => testSuiteSchema.parse(suite));
+    return payload.suites.map((suite) => testSuiteSchema.parse(stripCompiledMetadata(suite)));
   }
-  return [testSuiteSchema.parse(payload)];
+  return [testSuiteSchema.parse(stripCompiledMetadata(payload))];
+}
+
+function stripCompiledMetadata(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return payload;
+  }
+  const cloned = { ...(payload as Record<string, unknown>) };
+  delete cloned._spec;
+  return cloned;
 }
 
 async function loadSuitesForExecution(specPath: string, strictMode: boolean, compiledOut?: string, llmOptions?: { llmModel?: string; llmTemperature?: number; llmMaxAttempts?: number; onLlmCall?: NormalizerConfig["on_llm_call"] }): Promise<TestSuite[]> {

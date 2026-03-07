@@ -374,9 +374,11 @@ export async function runTui(specs: string[]): Promise<void> {
       });
 
       startSpinner("Normalizing suite...");
-      const suite = compiledPlanIsFresh(compiledPath, specPath)
-        ? JSON.parse(readFileSync(compiledPath, "utf8"))
-        : await normalizer.normalize(raw);
+      const suite = testSuiteSchema.parse(
+        compiledPlanIsFresh(compiledPath, specPath)
+        ? stripCompiledMetadata(JSON.parse(readFileSync(compiledPath, "utf8")))
+        : await normalizer.normalize(raw),
+      );
 
       if (!compiledPlanIsFresh(compiledPath, specPath)) {
         writeCompiledPlan({ suites: [suite], destination: compiledPath, sourceSpec: specPath, sourceHash: fileSha256(specPath) });
@@ -399,7 +401,7 @@ export async function runTui(specs: string[]): Promise<void> {
 
       setSpinner("Running Playwright suite...");
       const executor = new SuiteExecutor({ eventBus });
-      const result = await executor.runSuite(testSuiteSchema.parse(suite), {
+      const result = await executor.runSuite(suite, {
         output_dir: projectConfig.paths.results_dir,
         headless: state.headless,
       });
@@ -478,4 +480,13 @@ export async function runTui(specs: string[]): Promise<void> {
   });
 
   render();
+}
+
+function stripCompiledMetadata(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return payload;
+  }
+  const cloned = { ...(payload as Record<string, unknown>) };
+  delete cloned._spec;
+  return cloned;
 }
