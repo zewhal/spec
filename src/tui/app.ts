@@ -36,6 +36,7 @@ type AppState = {
   lastRunSummary: string;
   spinnerLabel: string;
   spinnerActive: boolean;
+  spinnerGeneration: number;
   selectedIndex: number;
 };
 
@@ -62,6 +63,7 @@ export async function runTui(specs: string[]): Promise<void> {
     lastRunSummary: "No runs yet.",
     spinnerLabel: "Idle",
     spinnerActive: false,
+    spinnerGeneration: 0,
     selectedIndex: 0,
   };
 
@@ -279,6 +281,7 @@ export async function runTui(specs: string[]): Promise<void> {
     dropSpinnerEntry();
     stopSpinner();
     state.spinnerActive = false;
+    state.spinnerGeneration += 1;
     logEntries.push({ kind: "system", title: message, body: message });
     render();
   }
@@ -287,6 +290,7 @@ export async function runTui(specs: string[]): Promise<void> {
     dropSpinnerEntry();
     stopSpinner();
     state.spinnerActive = false;
+    state.spinnerGeneration += 1;
 
     logEntries.push({
       kind: kind === "success" ? "result-pass" : kind === "failure" ? "result-fail" : "result-info",
@@ -297,6 +301,7 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   function updateSpinnerLine(): void {
+    const generation = state.spinnerGeneration;
     const frames = ["[|]", "[/]", "[-]", "[\\]"];
     const frame = frames[spinnerFrameIndex % frames.length] ?? "[|]";
     spinnerFrameIndex += 1;
@@ -309,7 +314,12 @@ export async function runTui(specs: string[]): Promise<void> {
       logEntries.push({ kind: "system", title: line, body: line });
     }
     render();
-    spinnerTimer = setTimeout(updateSpinnerLine, 120);
+    spinnerTimer = setTimeout(() => {
+      if (!state.spinnerActive || generation !== state.spinnerGeneration) {
+        return;
+      }
+      updateSpinnerLine();
+    }, 120);
   }
 
   function dropSpinnerEntry(): void {
@@ -323,6 +333,7 @@ export async function runTui(specs: string[]): Promise<void> {
     stopSpinner();
     state.spinnerLabel = label;
     state.spinnerActive = true;
+    state.spinnerGeneration += 1;
     spinnerFrameIndex = 0;
     updateSpinnerLine();
   }
@@ -341,6 +352,7 @@ export async function runTui(specs: string[]): Promise<void> {
       clearTimeout(spinnerTimer);
       spinnerTimer = null;
     }
+    state.spinnerGeneration += 1;
   }
 
   function copyLog(): void {
@@ -446,6 +458,13 @@ export async function runTui(specs: string[]): Promise<void> {
                 kind: "result-info",
                 title: `Freeflow detected for "${test_name}"`,
                 body: "This test was interpreted as freeform prose, so outline extraction was used before normalization.",
+              });
+              render();
+            } else if (authoring_mode === "fixed") {
+              logEntries.push({
+                kind: "result-info",
+                title: `Fixed grammar detected for "${test_name}"`,
+                body: "This test already uses structured steps, so no freeflow outline extraction was needed.",
               });
               render();
             }
