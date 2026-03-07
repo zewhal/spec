@@ -97,11 +97,6 @@ export function findProjectConfigPath(startPath: string = process.cwd()): string
       return specCandidate;
     }
 
-    const legacyCandidate = path.join(candidateDir, ".ahente", "ahente.toml");
-    if (existsSync(legacyCandidate)) {
-      return legacyCandidate;
-    }
-
     const parent = path.dirname(candidateDir);
     if (parent === candidateDir) {
       return path.join(process.cwd(), ".spec", "spec.toml");
@@ -117,7 +112,7 @@ export function loadProjectConfig(configPath?: string): ProjectConfig {
   }
 
   const payload = parse(readFileSync(resolvedPath, "utf8")) as Record<string, unknown>;
-  const sectionName = path.basename(resolvedPath) === "spec.toml" ? "spec" : "ahente";
+  const sectionName = "spec";
   const projectPayload = payload[sectionName];
   if (!projectPayload || typeof projectPayload !== "object") {
     return projectConfigSchema.parse({});

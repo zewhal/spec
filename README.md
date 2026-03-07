@@ -23,7 +23,7 @@ viewport = "desktop"
 locale = "en-US"
 ```
 
-Launch it like Ahente:
+Launch it from Bun:
 
 ```bash
 bun run spec
