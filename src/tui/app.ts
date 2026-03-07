@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { Box, CodeRenderable, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, SyntaxStyle, TextRenderable, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
+import { Box, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, TextRenderable, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
 
 import { findProjectConfigPath, loadProjectConfig } from "../config";
 import { testSuiteSchema } from "../models/suite";
@@ -37,7 +37,6 @@ type AppState = {
   spinnerLabel: string;
   spinnerActive: boolean;
   selectedIndex: number;
-  selectedLogIndex: number;
 };
 
 type LogEntryKind = "system" | "llm-prompt" | "llm-json" | "result-pass" | "result-fail" | "result-info";
@@ -64,19 +63,10 @@ export async function runTui(specs: string[]): Promise<void> {
     spinnerLabel: "Idle",
     spinnerActive: false,
     selectedIndex: 0,
-    selectedLogIndex: 0,
   };
 
   const logEntries: LogEntry[] = [];
   const rendererRoot = renderer.root;
-  const codeTheme = SyntaxStyle.fromStyles({
-    keyword: { fg: "#ff7b72" as never },
-    string: { fg: "#a5d6ff" as never },
-    number: { fg: "#79c0ff" as never },
-    property: { fg: "#7ee787" as never },
-    punctuation: { fg: "#c9d1d9" as never },
-    default: { fg: "#e6edf3" as never },
-  });
 
   const footerText = new TextRenderable(renderer, { content: "enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit", fg: "#d9e2ec" });
   const shellNode = Box(
@@ -120,16 +110,7 @@ export async function runTui(specs: string[]): Promise<void> {
   });
 
   const statusText = new TextRenderable(renderer, { content: "", fg: "#f0f4f8" });
-  const logSummary = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
-  const logDetail = new CodeRenderable(renderer, {
-    content: "",
-    filetype: "json",
-    syntaxStyle: codeTheme,
-    width: "100%",
-    height: "100%",
-    drawUnstyledText: true,
-    streaming: false,
-  });
+  const logText = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
 
   const runnerViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "row", gap: 1 },
@@ -137,11 +118,7 @@ export async function runTui(specs: string[]): Promise<void> {
     Box(
       { flexGrow: 1, height: "100%", flexDirection: "column", gap: 1 },
       Box({ width: "100%", height: 12, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#111f2d", padding: 1 }, Box({ id: "status-scroll-host", width: "100%", height: "100%" })),
-      Box(
-        { width: "100%", flexGrow: 1, flexDirection: "row", gap: 1 },
-        Box({ width: "42%", height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 1 }, Box({ id: "log-list-host", width: "100%", height: "100%" })),
-        Box({ width: "58%", height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#0c1724", padding: 1 }, Box({ id: "log-detail-host", width: "100%", height: "100%" })),
-      ),
+      Box({ width: "100%", flexGrow: 1, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 1 }, Box({ id: "log-host", width: "100%", height: "100%" })),
     ),
   );
 
@@ -151,13 +128,10 @@ export async function runTui(specs: string[]): Promise<void> {
   const runnerView = instantiate(renderer, runnerViewNode);
   const statusScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "top", rootOptions: { backgroundColor: "#111f2d" } });
   const logScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "bottom", rootOptions: { backgroundColor: "#08121b" } });
-  const logDetailScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "top", rootOptions: { backgroundColor: "#0c1724" } });
   statusScroll.add(statusText);
-  logScroll.add(logSummary);
-  logDetailScroll.add(logDetail);
+  logScroll.add(logText);
   runnerView.findDescendantById("status-scroll-host")?.add(statusScroll);
-  runnerView.findDescendantById("log-list-host")?.add(logScroll);
-  runnerView.findDescendantById("log-detail-host")?.add(logDetailScroll);
+  runnerView.findDescendantById("log-host")?.add(logScroll);
   body?.add(introView);
   rendererRoot.add(shell);
 
@@ -191,9 +165,7 @@ export async function runTui(specs: string[]): Promise<void> {
     setText(introRecent, state.lastRunSummary);
 
     setText(statusText, renderStatusText());
-    setText(logSummary, renderLogSummary());
-    logDetail.filetype = selectedLogEntry()?.kind === "llm-json" ? "json" : "markdown";
-    logDetail.content = renderLogDetail();
+    setText(logText, renderLogText());
 
     if (state.view === "intro") {
       body?.remove(runnerView.id);
@@ -240,31 +212,27 @@ export async function runTui(specs: string[]): Promise<void> {
     return lines.join("\n");
   }
 
-  function renderLogSummary(): string {
+  function renderLogText(): string {
     if (logEntries.length === 0) {
       return "No logs yet. Start a run to see live execution output.";
     }
 
     return logEntries
-      .map((entry, index) => `${index === state.selectedLogIndex ? ">" : " "} ${entryBadge(entry.kind)} ${entry.title}`)
+      .map((entry) => renderEntry(entry))
       .join("\n");
   }
 
-  function renderLogDetail(): string {
-    const entry = selectedLogEntry();
-    if (!entry) {
-      return "# Execution Detail\n\nSelect a log item to inspect it here.";
+  function renderEntry(entry: LogEntry): string {
+    const badge = entryBadge(entry.kind);
+    const lines = [`${badge} ${entry.title}`];
+    if (entry.body && entry.body !== entry.title) {
+      if (entry.kind === "llm-json") {
+        lines.push(indentBlock(prettyJson(entry.body)));
+      } else {
+        lines.push(indentBlock(entry.body));
+      }
     }
-
-    if (entry.kind === "llm-json") {
-      return entry.body ?? "{}";
-    }
-
-    return [`# ${entryBadge(entry.kind)} ${entry.title}`, "", entry.body ?? "No detail available."].join("\n");
-  }
-
-  function selectedLogEntry(): LogEntry | undefined {
-    return logEntries[state.selectedLogIndex];
+    return lines.join("\n");
   }
 
   function entryBadge(kind: LogEntryKind): string {
@@ -284,12 +252,26 @@ export async function runTui(specs: string[]): Promise<void> {
     }
   }
 
+  function indentBlock(value: string): string {
+    return value
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n");
+  }
+
+  function prettyJson(value: string): string {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2);
+    } catch {
+      return value;
+    }
+  }
+
   function appendLog(message: string): void {
     dropSpinnerEntry();
     stopSpinner();
     state.spinnerActive = false;
     logEntries.push({ kind: "system", title: message, body: message });
-    state.selectedLogIndex = logEntries.length - 1;
     render();
   }
 
@@ -303,7 +285,6 @@ export async function runTui(specs: string[]): Promise<void> {
       title,
       body: details.join("\n"),
     });
-    state.selectedLogIndex = logEntries.length - 1;
     render();
   }
 
@@ -318,7 +299,6 @@ export async function runTui(specs: string[]): Promise<void> {
       lastEntry.body = line;
     } else {
       logEntries.push({ kind: "system", title: line, body: line });
-      state.selectedLogIndex = logEntries.length - 1;
     }
     render();
     spinnerTimer = setTimeout(updateSpinnerLine, 120);
@@ -328,7 +308,6 @@ export async function runTui(specs: string[]): Promise<void> {
     const lastEntry = logEntries.at(-1);
     if (state.spinnerActive && lastEntry?.kind === "system" && lastEntry.title.startsWith("[")) {
       logEntries.pop();
-      state.selectedLogIndex = Math.max(0, logEntries.length - 1);
     }
   }
 
@@ -457,7 +436,6 @@ export async function runTui(specs: string[]): Promise<void> {
             setSpinner("Waiting for LLM...");
             logEntries.push({ kind: "llm-prompt", title: `Prompt: ${prompt.slice(0, 80)}...`, body: prompt });
             logEntries.push({ kind: "llm-json", title: "LLM JSON output", body: JSON.stringify(response, null, 2) });
-            state.selectedLogIndex = logEntries.length - 1;
             render();
             setSpinner("Normalizing suite...");
           },
@@ -562,18 +540,6 @@ export async function runTui(specs: string[]): Promise<void> {
 
     if (key.name === "y") {
       copyLog();
-      return;
-    }
-
-    if (key.name === "up" && state.view === "runner") {
-      state.selectedLogIndex = Math.max(0, state.selectedLogIndex - 1);
-      render();
-      return;
-    }
-
-    if (key.name === "down" && state.view === "runner") {
-      state.selectedLogIndex = Math.min(logEntries.length - 1, state.selectedLogIndex + 1);
-      render();
       return;
     }
 
