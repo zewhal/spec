@@ -1,0 +1,17 @@
+{
+  "name": "spec",
+  "version": "0.1.0",
+  "description": "Markdown-to-executable browser spec compiler and runtime on Bun",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
