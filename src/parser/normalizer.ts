@@ -309,7 +309,11 @@ export class SpecNormalizer {
 
   private async normalizeExpectationText(expectationText: string, _expectationIndex: number): Promise<Expectation> {
     const expectationData = this.sanitizeExpectationPayload(await this.llmClient.normalizeExpectation(expectationText.trim()));
-    return expectationSchema.parse(expectationData);
+    try {
+      return expectationSchema.parse(expectationData);
+    } catch {
+      return this.normalizeFreeflowExpectationFallback(expectationText, _expectationIndex);
+    }
   }
 
   private normalizeFixedExpectationText(expectationText: string, expectationIndex: number): Expectation {
@@ -356,6 +360,25 @@ export class SpecNormalizer {
       kind: "text_visible",
       text: resolved,
     });
+  }
+
+  private normalizeFreeflowExpectationFallback(expectationText: string, expectationIndex: number): Expectation {
+    const resolved = expectationText.trim();
+    const lower = resolved.toLowerCase();
+
+    if (lower === "page loads successfully" || lower === "page is visible") {
+      return expectationSchema.parse({
+        id: `expect-${expectationIndex}`,
+        kind: "element_visible",
+        target: {
+          css: "body",
+          human_label: "page body",
+          require_visible: true,
+        },
+      });
+    }
+
+    return this.normalizeFixedExpectationText(resolved, expectationIndex);
   }
 
   private requiresOutlineExtraction(rawTest: RawTestCase, authoringMode: "auto" | "fixed" | "freeflow"): boolean {

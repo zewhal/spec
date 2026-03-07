@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { Box, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, TextRenderable, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
+import { Box, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, TextRenderable, stringToStyledText, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
 
 import { findProjectConfigPath, loadProjectConfig } from "../config";
 import { testSuiteSchema } from "../models/suite";
@@ -112,7 +112,7 @@ export async function runTui(specs: string[]): Promise<void> {
   });
 
   const statusText = new TextRenderable(renderer, { content: "", fg: "#f0f4f8" });
-  const logText = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
+  const logText = new TextRenderable(renderer, { content: stringToStyledText(""), fg: "#d9e2ec" });
 
   const runnerViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "row", gap: 1 },
@@ -220,12 +220,16 @@ export async function runTui(specs: string[]): Promise<void> {
     return lines.join("\n");
   }
 
-  function renderStyledLogText(): string {
+  function renderStyledLogText() {
     if (logEntries.length === 0) {
-      return "No logs yet. Start a run to see live execution output.";
+      return stringToStyledText("No logs yet. Start a run to see live execution output.");
     }
 
-    return logEntries.map((entry) => renderStyledEntry(entry)).join("\n\n");
+    return stringToStyledText(
+      logEntries
+        .map((entry) => renderEntry(entry))
+        .join("\n\n"),
+    );
   }
 
   function renderEntry(entry: LogEntry): string {
@@ -247,60 +251,12 @@ export async function runTui(specs: string[]): Promise<void> {
     return lines.join("\n");
   }
 
-  function renderStyledEntry(entry: LogEntry): string {
-    if (entry.kind === "llm-prompt") {
-      return renderChatBubble("right", "YOU -> LLM", entry.body ?? entry.title, "text");
-    }
-    if (entry.kind === "llm-json") {
-      return renderChatBubble("left", "LLM -> SPEC", prettyJson(entry.body ?? "{}"), "json");
-    }
-    if (entry.kind === "result-pass") {
-      return renderBanner("PASS", entry.title, entry.body);
-    }
-    if (entry.kind === "result-fail") {
-      return renderBanner("FAIL", entry.title, entry.body);
-    }
-    if (entry.kind === "result-info") {
-      return renderBanner("INFO", entry.title, entry.body);
-    }
-    return renderEntry(entry);
-  }
-
-  function renderChatBubble(side: "left" | "right", label: string, body: string, format: "text" | "json"): string {
-    const availableWidth = Math.max(36, Math.min(72, terminalWidthEstimate() - 40));
-    const width = side === "left" ? availableWidth : availableWidth;
-    const content = format === "json" ? prettyJson(body) : body;
-    const lines = content.split("\n");
-    const indent = side === "left" ? 0 : Math.max(0, terminalWidthEstimate() - width - 6);
-    const prefix = " ".repeat(indent);
-    const top = `${prefix}┌─ ${label}`;
-    const wrapped = lines.flatMap((line) => wrapLine(line, width));
-    const bubble = wrapped.map((line) => {
-      const padded = line.padEnd(width, " ");
-      return `${prefix}│ ${padded} │`;
-    });
-    const bottom = `${prefix}└${"─".repeat(width + 2)}┘`;
-    return [top, ...bubble, bottom].join("\n");
-  }
-
-  function terminalWidthEstimate(): number {
-    return Number(process.stdout.columns ?? 100);
-  }
-
-  function renderBanner(kind: "PASS" | "FAIL" | "INFO", title: string, body?: string): string {
-    const lines = [`${kind} ${title}`];
-    if (body) {
-      lines.push(indentBlock(body));
-    }
-    return lines.join("\n");
-  }
-
   function entryBadge(kind: LogEntryKind): string {
     switch (kind) {
       case "llm-prompt":
-        return "LLM";
+        return "YOU -> LLM";
       case "llm-json":
-        return "JSON";
+        return "LLM -> SPEC";
       case "result-pass":
         return "PASS";
       case "result-fail":
@@ -317,22 +273,6 @@ export async function runTui(specs: string[]): Promise<void> {
       .split("\n")
       .map((line) => `  ${line}`)
       .join("\n");
-  }
-
-  function wrapLine(value: string, width: number): string[] {
-    if (value.length <= width) {
-      return [value];
-    }
-    const parts: string[] = [];
-    let remaining = value;
-    while (remaining.length > width) {
-      parts.push(remaining.slice(0, width));
-      remaining = remaining.slice(width);
-    }
-    if (remaining.length > 0) {
-      parts.push(remaining);
-    }
-    return parts;
   }
 
   function prettyJson(value: string): string {
