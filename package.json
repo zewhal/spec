@@ -21,6 +21,7 @@
   "dependencies": {
     "@clack/prompts": "^1.1.0",
     "@inquirer/prompts": "^8.3.0",
+    "@playwright/test": "^1.58.2",
     "markdown-it": "^14.1.1",
     "neo-blessed": "^0.2.0",
     "picocolors": "^1.1.1",
