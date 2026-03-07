@@ -1,8 +1,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { intro, log, note, outro, select, spinner } from "@clack/prompts";
-import pc from "picocolors";
+import { log, note, spinner } from "@clack/prompts";
 import slugify from "slugify";
 
 import { findProjectConfigPath, loadProjectConfig } from "./config/project";
@@ -14,6 +13,7 @@ import { loadMarkdown, listMarkdownSpecs } from "./parser/markdown-loader";
 import { SpecNormalizer, type NormalizerConfig } from "./parser/normalizer";
 import { parseMarkdownToRaw } from "./parser/markdown-parser";
 import { compiledPlanIsFresh, defaultCompiledOutputPath, fileSha256, writeCompiledPlan } from "./runtime/persistence";
+import { runTui } from "./tui/app";
 
 export const appName = "spec";
 
@@ -495,48 +495,7 @@ async function initCommand(force: boolean): Promise<void> {
 }
 
 async function tuiCommand(): Promise<void> {
-  const specs = await discoverSpecs();
-  intro(pc.cyan("spec"));
-
-  if (specs.length === 0) {
-    note("No markdown specs found. Run `bun run spec init` and add files matching `tests/**/*.md`.", "No Specs");
-    outro("Nothing to run yet.");
-    return;
-  }
-
-  const specPath = await select<string>({
-    message: "Choose a markdown spec",
-    options: specs.map((spec) => ({ value: spec, label: path.relative(process.cwd(), spec) })),
-  });
-
-  if (typeof specPath !== "string") {
-    outro("Cancelled.");
-    return;
-  }
-
-  const mode = await select<string>({
-    message: "Choose workflow",
-    options: [
-      { value: "run", label: "Compile + Run" },
-      { value: "compile", label: "Compile Only" },
-    ],
-  });
-
-  if (typeof mode !== "string") {
-    outro("Cancelled.");
-    return;
-  }
-
-  note(`Spec: ${path.relative(process.cwd(), specPath)}\nMode: ${mode === "run" ? "Compile + Run" : "Compile Only"}`, "Session");
-
-  if (mode === "compile") {
-    await runSpecPath(specPath, { compileOnly: true });
-    outro("Compile complete.");
-    return;
-  }
-
-  await runSpecPath(specPath, {});
-  outro("Run complete.");
+  await runTui(await discoverSpecs());
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
