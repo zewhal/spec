@@ -233,7 +233,7 @@ export class SpecNormalizer {
 
   private async normalizeStepText(stepText: string, variables: Record<string, string>, _stepIndex: number): Promise<Action> {
     const resolved = this.interpolateVariables(stepText.trim(), variables);
-    const actionData = this.sanitizeActionPayload(await this.llmClient.normalizeStep(resolved));
+    const actionData = this.sanitizeActionPayload(await this.llmClient.normalizeStep(resolved), resolved);
     return actionSchema.parse(actionData);
   }
 
@@ -384,10 +384,16 @@ export class SpecNormalizer {
     return "auto";
   }
 
-  private sanitizeActionPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  private sanitizeActionPayload(payload: Record<string, unknown>, sourceText?: string): Record<string, unknown> {
     const repaired: Record<string, unknown> = { ...payload };
     const kind = String(repaired.kind ?? "").trim().toLowerCase();
     const targetAlias = this.extractTargetAlias(repaired);
+    const source = (sourceText ?? "").trim();
+
+    const splitFreeflowAction = this.splitCombinedFreeflowStep(source);
+    if (splitFreeflowAction) {
+      return splitFreeflowAction;
+    }
 
     if (
       [
@@ -435,6 +441,13 @@ export class SpecNormalizer {
     }
 
     if (kind === "goto") {
+      delete repaired.duration_ms;
+      delete repaired.wait_type;
+      delete repaired.value;
+      delete repaired.method;
+      delete repaired.path;
+      delete repaired.status_code;
+      delete repaired.target;
       if (typeof repaired.path === "string" && repaired.url === undefined) {
         repaired.url = repaired.path;
       }
@@ -445,6 +458,10 @@ export class SpecNormalizer {
     }
 
     if (kind === "wait_for") {
+      delete repaired.url;
+      delete repaired.readiness;
+      delete repaired.readiness_text;
+      delete repaired.readiness_target;
       const waitType = String(repaired.wait_type ?? "").trim().toLowerCase();
       if (["text", "url"].includes(waitType)) {
         if (typeof repaired.readiness_text === "string" && repaired.value === undefined) {
@@ -476,6 +493,44 @@ export class SpecNormalizer {
     }
 
     return repaired;
+  }
+
+  private splitCombinedFreeflowStep(sourceText: string): Record<string, unknown> | null {
+    const normalized = sourceText.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const openAndWait = normalized.match(/^open\s+(.+?)\s+and\s+wait\s+for\s+(one|\d+)\s+(second|seconds|ms|milliseconds)$/iu);
+    if (openAndWait?.[1]) {
+      return {
+        kind: "goto",
+        url: openAndWait[1].trim(),
+        readiness: "load",
+      };
+    }
+
+    const openOnly = normalized.match(/^open\s+(.+)$/iu);
+    if (openOnly?.[1] && !normalized.toLowerCase().includes(" and wait ")) {
+      return {
+        kind: "goto",
+        url: openOnly[1].trim(),
+        readiness: "load",
+      };
+    }
+
+    const waitWords = normalized.match(/^wait\s+for\s+(one|\d+)\s+(second|seconds|ms|milliseconds)$/iu);
+    if (waitWords?.[1]) {
+      const amount = waitWords[1].toLowerCase() === "one" ? 1 : Number(waitWords[1]);
+      const unit = waitWords[2]?.toLowerCase() ?? "seconds";
+      return {
+        kind: "wait_for",
+        wait_type: "timeout",
+        duration_ms: unit.startsWith("ms") ? amount : amount * 1000,
+      };
+    }
+
+    return null;
   }
 
   private sanitizeExpectationPayload(payload: Record<string, unknown>): Record<string, unknown> {

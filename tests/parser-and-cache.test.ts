@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import path from "node:path";
 
+import { MiniMaxClient } from "../src/integrations";
+import { SpecNormalizer } from "../src/parser/normalizer";
 import { parseMarkdownToRaw } from "../src/parser/markdown-parser";
 import {
   compiledPlanIsFresh,
@@ -89,6 +91,56 @@ Open the storefront, add the featured product to the cart, go to checkout, and c
   expect(raw.tests[0]?.freeflow_block).toContain("Open the storefront");
   expect(raw.tests[0]?.steps).toEqual([]);
   expect(raw.tests[0]?.expectations).toEqual([]);
+});
+
+test("freeflow normalization sanitizes mixed goto and wait payloads", async () => {
+  const raw = parseMarkdownToRaw(`
+# Suite: Guided Authoring
+
+## Config
+base_url: https://example.org
+
+## Test: Another simple test
+
+Open https://example.org/index.html and wait for one second.
+`);
+
+  const normalizer = new SpecNormalizer({
+    projectConfig: {
+      paths: { specs_pattern: "tests/**/*.md", results_dir: ".spec/results" },
+      runtime: {
+        base_url: "https://example.org",
+        browser: "chromium",
+        viewport: "desktop",
+        locale: "en-US",
+        capture: "on-failure",
+        allowed_subdomains: ["example.org"],
+        default_timeout_ms: 10_000,
+        assertion_timeout_ms: 10_000,
+        locator_resolution_timeout_ms: 5_000,
+        navigation_timeout_ms: 30_000,
+        max_retries: 0,
+        retry_on_flake: false,
+        strict_mode: false,
+      },
+    },
+    llmClient: {
+      normalizeStep: async () => ({
+        kind: "goto",
+        url: "https://example.org/index.html",
+        duration_ms: 1000,
+      }),
+      normalizeExpectation: async () => ({ kind: "text_visible", text: "ok" }),
+      extractTestOutline: async () => ({
+        steps: ["Open https://example.org/index.html and wait for one second."],
+        expectations: [],
+      }),
+    } as unknown as MiniMaxClient,
+  });
+
+  const normalized = await normalizer.normalize(raw);
+  expect(normalized.tests[0]?.steps[0]?.kind).toBe("goto");
+  expect(normalized.tests[0]?.steps[0]).not.toHaveProperty("duration_ms");
 });
 
 test("defaultCompiledOutputPath uses compiled directory for markdown files", async () => {
