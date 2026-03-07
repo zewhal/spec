@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { Box, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, Text, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
+import { Box, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, TextRenderable, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
 
 import { findProjectConfigPath, loadProjectConfig } from "../config";
 import { testSuiteSchema } from "../models/suite";
@@ -60,18 +60,18 @@ export async function runTui(specs: string[]): Promise<void> {
   const logLines: string[] = [];
   const rendererRoot = renderer.root;
 
-  const footerText = Text({ content: "enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit", fg: "#d9e2ec" });
+  const footerText = new TextRenderable(renderer, { content: "enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit", fg: "#d9e2ec" });
   const shellNode = Box(
     { width: "100%", height: "100%", flexDirection: "column", backgroundColor: "#08111b" },
-    Box({ width: "100%", height: 3, paddingLeft: 1, paddingRight: 1, backgroundColor: "#10233a", justifyContent: "center" }, Text({ content: "spec - Markdown -> Runtime -> Bun - live", fg: "#f5f7fa" })),
+    Box({ width: "100%", height: 3, paddingLeft: 1, paddingRight: 1, backgroundColor: "#10233a", justifyContent: "center" }, new TextRenderable(renderer, { content: "spec - Markdown -> Runtime -> Bun - live", fg: "#f5f7fa" })),
     Box({ id: "body-root", width: "100%", flexGrow: 1, padding: 1, backgroundColor: "#07111b" }),
     Box({ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "#102a43" }, footerText),
   );
 
-  const introHero = Text({ content: "SPEC\n\nWrite markdown. Run real browsers.", fg: "#e6f1f8" });
-  const introStats = Text({ content: "", fg: "#d9e2ec" });
-  const introKeys = Text({ content: "", fg: "#d9e2ec" });
-  const introRecent = Text({ content: "", fg: "#d9e2ec" });
+  const introHero = new TextRenderable(renderer, { content: "SPEC\n\nWrite markdown. Run real browsers.", fg: "#e6f1f8" });
+  const introStats = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
+  const introKeys = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
+  const introRecent = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
 
   const introViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "column", gap: 1 },
@@ -101,8 +101,8 @@ export async function runTui(specs: string[]): Promise<void> {
     showDescription: false,
   });
 
-  const statusText = Text({ content: "", fg: "#f0f4f8" });
-  const logText = Text({ content: "", fg: "#d9e2ec" });
+  const statusText = new TextRenderable(renderer, { content: "", fg: "#f0f4f8" });
+  const logText = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
 
   const runnerViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "row", gap: 1 },
@@ -120,8 +120,8 @@ export async function runTui(specs: string[]): Promise<void> {
   const runnerView = instantiate(renderer, runnerViewNode);
   const statusScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "top", rootOptions: { backgroundColor: "#111f2d" } });
   const logScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "bottom", rootOptions: { backgroundColor: "#08121b" } });
-  statusScroll.add(instantiate(renderer, statusText));
-  logScroll.add(instantiate(renderer, logText));
+  statusScroll.add(statusText);
+  logScroll.add(logText);
   runnerView.findDescendantById("status-scroll-host")?.add(statusScroll);
   runnerView.findDescendantById("log-scroll-host")?.add(logScroll);
   body?.add(introView);
