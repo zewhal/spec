@@ -217,7 +217,7 @@ export async function runTui(specs: string[]): Promise<void> {
       return "No logs yet. Start a run to see live execution output.";
     }
 
-    return logEntries.map((entry) => renderStyledEntry(entry)).join("\n");
+    return logEntries.map((entry) => renderStyledEntry(entry)).join("\n\n");
   }
 
   function renderEntry(entry: LogEntry): string {
@@ -225,7 +225,13 @@ export async function runTui(specs: string[]): Promise<void> {
     const lines = [`${badge} ${entry.title}`];
     if (entry.body && entry.body !== entry.title) {
       if (entry.kind === "llm-json") {
+        lines.push("```json");
         lines.push(indentBlock(prettyJson(entry.body)));
+        lines.push("```");
+      } else if (entry.kind === "llm-prompt") {
+        lines.push("```text");
+        lines.push(indentBlock(entry.body));
+        lines.push("```");
       } else {
         lines.push(indentBlock(entry.body));
       }
@@ -469,6 +475,8 @@ export async function runTui(specs: string[]): Promise<void> {
       }
 
       if (state.compileOnly) {
+        stopSpinner();
+        state.spinnerActive = false;
         appendResult("info", "Compile complete", [
           `Suite: ${suite.name}`,
           `Compiled plan: ${compiledPath}`,
@@ -488,6 +496,9 @@ export async function runTui(specs: string[]): Promise<void> {
       });
       setSpinner("Writing reports...");
       const persistedPaths = await persistSuiteOutputs(result, projectConfig.paths.results_dir, compiledPath);
+      stopSpinner();
+      state.spinnerActive = false;
+      dropSpinnerEntry();
       appendResult(result.status === "passed" ? "success" : "failure", `Suite ${result.status}`, [
         `Suite: ${result.suite_name}`,
         `Artifacts: ${result.artifacts_root}`,
@@ -499,6 +510,9 @@ export async function runTui(specs: string[]): Promise<void> {
       state.lastRunSummary = `Last suite: ${result.suite_name}\nStatus: ${result.status}\nArtifacts: ${result.artifacts_root}`;
       render();
     } catch (error) {
+      stopSpinner();
+      state.spinnerActive = false;
+      dropSpinnerEntry();
       appendResult("failure", "Suite failed", [`Reason: ${error instanceof Error ? error.message : String(error)}`]);
       state.suiteStatus = "failed";
       state.lastRunSummary = `Last suite failed\nReason: ${error instanceof Error ? error.message : String(error)}`;
