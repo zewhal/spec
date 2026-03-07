@@ -242,7 +242,44 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   function renderStyledEntry(entry: LogEntry): string {
+    if (entry.kind === "llm-prompt") {
+      return renderChatBubble("right", "YOU -> LLM", entry.body ?? entry.title, "text");
+    }
+    if (entry.kind === "llm-json") {
+      return renderChatBubble("left", "LLM -> SPEC", prettyJson(entry.body ?? "{}"), "json");
+    }
+    if (entry.kind === "result-pass") {
+      return renderBanner("PASS", entry.title, entry.body);
+    }
+    if (entry.kind === "result-fail") {
+      return renderBanner("FAIL", entry.title, entry.body);
+    }
+    if (entry.kind === "result-info") {
+      return renderBanner("INFO", entry.title, entry.body);
+    }
     return renderEntry(entry);
+  }
+
+  function renderChatBubble(side: "left" | "right", label: string, body: string, format: "text" | "json"): string {
+    const width = 46;
+    const content = format === "json" ? prettyJson(body) : body;
+    const lines = content.split("\n");
+    const top = side === "left" ? `┌─ ${label} ` : `${" ".repeat(18)}┌─ ${label} `;
+    const wrapped = lines.flatMap((line) => wrapLine(line, width));
+    const bubble = wrapped.map((line) => {
+      const padded = line.padEnd(width, " ");
+      return side === "left" ? `│ ${padded} │` : `${" ".repeat(18)}│ ${padded} │`;
+    });
+    const bottom = side === "left" ? `└${"─".repeat(width + 2)}┘` : `${" ".repeat(18)}└${"─".repeat(width + 2)}┘`;
+    return [top, ...bubble, bottom].join("\n");
+  }
+
+  function renderBanner(kind: "PASS" | "FAIL" | "INFO", title: string, body?: string): string {
+    const lines = [`${kind} ${title}`];
+    if (body) {
+      lines.push(indentBlock(body));
+    }
+    return lines.join("\n");
   }
 
   function entryBadge(kind: LogEntryKind): string {
@@ -267,6 +304,22 @@ export async function runTui(specs: string[]): Promise<void> {
       .split("\n")
       .map((line) => `  ${line}`)
       .join("\n");
+  }
+
+  function wrapLine(value: string, width: number): string[] {
+    if (value.length <= width) {
+      return [value];
+    }
+    const parts: string[] = [];
+    let remaining = value;
+    while (remaining.length > width) {
+      parts.push(remaining.slice(0, width));
+      remaining = remaining.slice(width);
+    }
+    if (remaining.length > 0) {
+      parts.push(remaining);
+    }
+    return parts;
   }
 
   function prettyJson(value: string): string {
