@@ -88,15 +88,20 @@ export class SpecNormalizer {
     const suiteId = slugify(rawSuite.name) || "suite";
     const resolvedVariables = this.resolveEnvVariables(rawSuite.variables);
 
-    const setupSteps = await Promise.all(
-      rawSuite.setup_steps.map((step, index) => this.normalizeStepText(step, resolvedVariables, index + 1)),
-    );
-    const teardownSteps = await Promise.all(
-      rawSuite.teardown_steps.map((step, index) => this.normalizeStepText(step, resolvedVariables, index + 1)),
-    );
-    const tests = await Promise.all(
-      rawSuite.tests.map((test, index) => this.normalizeTest(rawSuite, test, index + 1, resolvedVariables)),
-    );
+    const setupSteps: Action[] = [];
+    for (const [index, step] of rawSuite.setup_steps.entries()) {
+      setupSteps.push(await this.normalizeStepText(step, resolvedVariables, index + 1));
+    }
+
+    const teardownSteps: Action[] = [];
+    for (const [index, step] of rawSuite.teardown_steps.entries()) {
+      teardownSteps.push(await this.normalizeStepText(step, resolvedVariables, index + 1));
+    }
+
+    const tests: TestCase[] = [];
+    for (const [index, test] of rawSuite.tests.entries()) {
+      tests.push(await this.normalizeTest(rawSuite, test, index + 1, resolvedVariables));
+    }
 
     const allowedSubdomains = String(mergedConfig.allowed_subdomains ?? "")
       .split(",")
@@ -377,7 +382,14 @@ export class SpecNormalizer {
     const resolved = expectationText.trim();
     const lower = resolved.toLowerCase();
 
-    if (lower === "page loads successfully" || lower === "page is visible") {
+    if (
+      lower === "page loads successfully" ||
+      lower === "page is visible" ||
+      lower === "page should load successfully" ||
+      lower === "page should be visible" ||
+      lower === "page should be accessible" ||
+      lower === "page is accessible"
+    ) {
       return expectationSchema.parse({
         id: `expect-${expectationIndex}`,
         kind: "element_visible",

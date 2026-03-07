@@ -243,7 +243,7 @@ export async function runTui(specs: string[]): Promise<void> {
         renderer,
         Box({ width: "100%", flexDirection: "row", justifyContent: alignRight ? "flex-end" : "flex-start" }),
       );
-      const rowBody = instantiate(renderer, Box({ width: "94%", marginBottom: 1 }));
+      const rowBody = instantiate(renderer, Box({ width: "100%", marginBottom: 1 }));
       const message = new TextRenderable(renderer, {
         content: renderEntry(entry),
         fg: colorForEntry(entry.kind),
@@ -264,31 +264,70 @@ export async function runTui(specs: string[]): Promise<void> {
   function colorForEntry(kind: LogEntryKind): string {
     switch (kind) {
       case "llm-prompt":
-        return "#fde047";
+        return "yellow";
       case "llm-json":
-        return "#67e8f9";
+        return "cyan";
       case "result-pass":
-        return "#86efac";
+        return "green";
       case "result-fail":
-        return "#fca5a5";
+        return "red";
       case "result-info":
-        return "#93c5fd";
+        return "blue";
       default:
-        return "#cbd5e1";
+        return "white";
     }
   }
 
   function renderEntry(entry: LogEntry): string {
     const header = `${entryBadge(entry.kind)} ${entry.title}`;
     if (!entry.body || entry.body === entry.title) {
-      return header;
+      return entry.kind === "llm-prompt" ? rightAlignMultiline(header) : header;
     }
 
     if (entry.kind === "llm-json") {
       return `${header}\n\n${prettyJson(entry.body)}`;
     }
 
+    if (entry.kind === "llm-prompt") {
+      return rightAlignMultiline(`${header}\n\n${entry.body}`);
+    }
+
     return `${header}\n\n${entry.body}`;
+  }
+
+  function rightAlignMultiline(value: string): string {
+    const width = estimateLogTextWidth();
+    return value
+      .split("\n")
+      .flatMap((line) => wrapToWidth(line, width))
+      .map((line) => `${" ".repeat(Math.max(0, width - line.length))}${line}`)
+      .join("\n");
+  }
+
+  function estimateLogTextWidth(): number {
+    const columns = Number(process.stdout.columns ?? 120);
+    const reserved = 36;
+    return Math.max(36, columns - reserved);
+  }
+
+  function wrapToWidth(value: string, width: number): string[] {
+    if (!value) {
+      return [""];
+    }
+    if (value.length <= width) {
+      return [value];
+    }
+
+    const lines: string[] = [];
+    let remaining = value;
+    while (remaining.length > width) {
+      lines.push(remaining.slice(0, width));
+      remaining = remaining.slice(width);
+    }
+    if (remaining.length > 0) {
+      lines.push(remaining);
+    }
+    return lines;
   }
 
   function entryBadge(kind: LogEntryKind): string {
