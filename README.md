@@ -29,6 +29,43 @@ Launch it from Bun:
 bun run spec
 ```
 
+## Example
+
+Create a markdown spec at `tests/specs/login.md`:
+
+```md
+# Suite: Login Flow
+
+## Test: User can open the home page
+
+### Steps
+1. Navigate to /
+2. Wait for text "Welcome"
+
+### Expect
+- URL should contain /
+- Text "Welcome" should be visible
+```
+
+Run it from the TUI:
+
+```bash
+bun run spec
+```
+
+Or run it directly:
+
+```bash
+bun run spec run tests/specs/login.md
+```
+
+That produces:
+
+- `.spec/compiled/login.json`
+- `.spec/results/Login-Flow/result.json`
+- `.spec/results/Login-Flow/report.md`
+- `.spec/results/Login-Flow/report.html`
+
 ## Workflow
 
 - `bun run spec` opens an interactive picker for discovered markdown specs.
