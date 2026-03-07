@@ -48,12 +48,61 @@ export async function runTui(specs: string[]): Promise<void> {
   let spinnerActive = false;
   let spinnerFrameIndex = 0;
   let spinnerLabel = "Running...";
+  let currentView: "intro" | "runner" = "intro";
 
-  const header = blessed.box({ top: 0, left: 0, width: "100%", height: 3, content: " spec - Markdown -> Runtime -> Bun ", tags: false, style: { fg: "white", bg: "blue" } });
-  const footer = blessed.box({ bottom: 0, left: 0, width: "100%", height: 1, content: " r run  h headless  c compile-only  q quit ", style: { fg: "white", bg: "gray" } });
-  const specsPanel = blessed.list({ top: 3, left: 0, width: "30%", bottom: 1, keys: true, vi: true, border: "line", label: " Specs ", items: specs.map((spec) => path.basename(spec)), style: { selected: { bg: "cyan", fg: "black" } } });
-  const statusBox = blessed.box({ top: 3, left: "30%", width: "70%", height: "45%-1", border: "line", label: " Run Status ", tags: false, scrollable: true, alwaysScroll: true });
-  const logBox = blessed.log({ top: "45%+2", left: "30%", width: "70%", bottom: 1, border: "line", label: " Execution Log ", tags: false, scrollback: 200 });
+  const header = blessed.box({ top: 0, left: 0, width: "100%", height: 3, content: " spec - Markdown -> Runtime -> Bun ", tags: false, style: { fg: "#f5f7fa", bg: "#19324a" } });
+  const footer = blessed.box({ bottom: 0, left: 0, width: "100%", height: 1, content: " enter open runner  r run  h headless  c compile-only  y copy logs  q quit ", style: { fg: "#d9e2ec", bg: "#102a43" } });
+
+  const introBox = blessed.box({
+    top: 3,
+    left: "center",
+    width: "78%",
+    height: "85%-1",
+    border: "line",
+    label: " Welcome ",
+    tags: false,
+    style: { fg: "#f0f4f8", bg: "#0b1622", border: { fg: "#2f6b8a" } },
+    content: [
+      "",
+      "  SPEC",
+      "  Markdown -> LLM -> Playwright",
+      "",
+      "  Turn markdown suites into executable browser tests with Bun.",
+      "",
+      `  Specs discovered: ${specs.length}`,
+      `  Default mode: ${state.modeLabel}`,
+      `  Browser: ${state.headless ? "Headless" : "Headful"}`,
+      "",
+      "  Quick Start",
+      "  - Press Enter to open the runner",
+      "  - Press h to toggle browser mode",
+      "  - Press c to switch compile-only mode",
+      "  - Press y later to copy execution logs",
+      "",
+      "  This layout is intentionally opener-first so you land on a dashboard",
+      "  before dropping into spec execution.",
+    ].join("\n"),
+  });
+
+  const runnerShell = blessed.box({ top: 3, left: 0, width: "100%", bottom: 1, hidden: true });
+  const specsPanel = blessed.list({ top: 0, left: 0, width: "30%", bottom: 0, parent: runnerShell, keys: true, vi: true, border: "line", label: " Specs ", items: specs.map((spec) => path.basename(spec)), style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#315f7d" }, selected: { bg: "#56c1ff", fg: "black" } } });
+  const statusBox = blessed.box({ top: 0, left: "30%", width: "70%", height: "45%-1", parent: runnerShell, border: "line", label: " Run Status ", tags: false, scrollable: true, alwaysScroll: true, style: { fg: "#f0f4f8", bg: "#111f2d", border: { fg: "#315f7d" } } });
+  const logBox = blessed.log({ top: "45%+2", left: "30%", width: "70%", bottom: 0, parent: runnerShell, border: "line", label: " Execution Log ", tags: false, scrollback: 200, style: { fg: "#d9e2ec", bg: "#08121b", border: { fg: "#315f7d" } } });
+
+  function showIntro(): void {
+    currentView = "intro";
+    introBox.show();
+    runnerShell.hide();
+    screen.render();
+  }
+
+  function showRunner(): void {
+    currentView = "runner";
+    introBox.hide();
+    runnerShell.show();
+    specsPanel.focus();
+    screen.render();
+  }
 
   function renderStatus(): void {
     const lines: string[] = [];
@@ -299,20 +348,69 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   screen.append(header);
-  screen.append(specsPanel);
-  screen.append(statusBox);
-  screen.append(logBox);
+  screen.append(introBox);
+  screen.append(runnerShell);
   screen.append(footer);
-  specsPanel.focus();
   renderStatus();
+  showIntro();
 
   screen.key(["q", "C-c"], () => process.exit(0));
+  screen.key(["enter"], () => {
+    if (currentView === "intro") {
+      showRunner();
+    }
+  });
+  screen.key(["escape"], () => {
+    if (currentView === "runner") {
+      showIntro();
+    }
+  });
   screen.key(["h"], () => {
     state.headless = !state.headless;
+    introBox.setContent([
+      "",
+      "  SPEC",
+      "  Markdown -> LLM -> Playwright",
+      "",
+      "  Turn markdown suites into executable browser tests with Bun.",
+      "",
+      `  Specs discovered: ${specs.length}`,
+      `  Default mode: ${state.modeLabel}`,
+      `  Browser: ${state.headless ? "Headless" : "Headful"}`,
+      "",
+      "  Quick Start",
+      "  - Press Enter to open the runner",
+      "  - Press h to toggle browser mode",
+      "  - Press c to switch compile-only mode",
+      "  - Press y later to copy execution logs",
+      "",
+      "  This layout is intentionally opener-first so you land on a dashboard",
+      "  before dropping into spec execution.",
+    ].join("\n"));
     renderStatus();
   });
   screen.key(["c"], () => {
     state.modeLabel = state.modeLabel === "Compile Only" ? "Compile + Run" : "Compile Only";
+    introBox.setContent([
+      "",
+      "  SPEC",
+      "  Markdown -> LLM -> Playwright",
+      "",
+      "  Turn markdown suites into executable browser tests with Bun.",
+      "",
+      `  Specs discovered: ${specs.length}`,
+      `  Default mode: ${state.modeLabel}`,
+      `  Browser: ${state.headless ? "Headless" : "Headful"}`,
+      "",
+      "  Quick Start",
+      "  - Press Enter to open the runner",
+      "  - Press h to toggle browser mode",
+      "  - Press c to switch compile-only mode",
+      "  - Press y later to copy execution logs",
+      "",
+      "  This layout is intentionally opener-first so you land on a dashboard",
+      "  before dropping into spec execution.",
+    ].join("\n"));
     renderStatus();
   });
   screen.key(["r"], () => {
