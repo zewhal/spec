@@ -214,6 +214,21 @@ export async function runTui(specs: string[]): Promise<void> {
     render();
   }
 
+  function appendResult(kind: "success" | "failure" | "info", title: string, details: string[]): void {
+    if (state.spinnerActive && logLines.length > 0 && logLines[logLines.length - 1]?.startsWith("[")) {
+      logLines.pop();
+    }
+    stopSpinner();
+    state.spinnerActive = false;
+
+    const badge = kind === "success" ? "[RESULT PASS]" : kind === "failure" ? "[RESULT FAIL]" : "[RESULT]";
+    logLines.push(`${badge} ${title}`);
+    for (const detail of details) {
+      logLines.push(`  ${detail}`);
+    }
+    render();
+  }
+
   function updateSpinnerLine(): void {
     const frames = ["[|]", "[/]", "[-]", "[\\]"];
     const frame = frames[spinnerFrameIndex % frames.length] ?? "[|]";
@@ -371,7 +386,11 @@ export async function runTui(specs: string[]): Promise<void> {
       }
 
       if (state.compileOnly) {
-        appendLog("Compile complete. Execution skipped.");
+        appendResult("info", "Compile complete", [
+          `Suite: ${suite.name}`,
+          `Compiled plan: ${compiledPath}`,
+          "Execution skipped because Compile Only mode is enabled.",
+        ]);
         state.suiteStatus = "completed";
         state.lastRunSummary = `Last suite: ${suite.name}\nStatus: compiled\nCompiled: ${compiledPath}`;
         render();
@@ -386,16 +405,18 @@ export async function runTui(specs: string[]): Promise<void> {
       });
       setSpinner("Writing reports...");
       const persistedPaths = await persistSuiteOutputs(result, projectConfig.paths.results_dir, compiledPath);
-      appendLog(`Completed! Status: ${result.status}`);
-      appendLog(`Artifacts: ${result.artifacts_root}`);
-      appendLog(`Result JSON: ${persistedPaths.result_json}`);
-      appendLog(`Report MD: ${persistedPaths.report_md}`);
-      appendLog(`Report HTML: ${persistedPaths.report_html}`);
-      appendLog(`Summary JSON: ${persistedPaths.summary_json}`);
+      appendResult(result.status === "passed" ? "success" : "failure", `Suite ${result.status}`, [
+        `Suite: ${result.suite_name}`,
+        `Artifacts: ${result.artifacts_root}`,
+        `Result JSON: ${persistedPaths.result_json}`,
+        `Report MD: ${persistedPaths.report_md}`,
+        `Report HTML: ${persistedPaths.report_html}`,
+        `Summary JSON: ${persistedPaths.summary_json}`,
+      ]);
       state.lastRunSummary = `Last suite: ${result.suite_name}\nStatus: ${result.status}\nArtifacts: ${result.artifacts_root}`;
       render();
     } catch (error) {
-      appendLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      appendResult("failure", "Suite failed", [`Reason: ${error instanceof Error ? error.message : String(error)}`]);
       state.suiteStatus = "failed";
       state.lastRunSummary = `Last suite failed\nReason: ${error instanceof Error ? error.message : String(error)}`;
       render();
