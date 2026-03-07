@@ -231,6 +231,7 @@ export async function runTui(specs: string[]): Promise<void> {
 
   function rebuildLogFeed(): void {
     clearChildren(logFeed);
+    const llmLaneWidth = "92%";
 
     if (logEntries.length === 0) {
       logFeed.add(new TextRenderable(renderer, { content: "No logs yet. Start a run to see live execution output.", fg: "#94a3b8" }));
@@ -246,7 +247,7 @@ export async function runTui(specs: string[]): Promise<void> {
       );
       const rowBody = instantiate(
         renderer,
-        Box({ width: isLlmExchange ? "68%" : "100%", marginBottom: 1 }),
+        Box({ width: isLlmExchange ? llmLaneWidth : "100%", marginBottom: 1 }),
       );
       const message = new TextRenderable(renderer, {
         content: renderEntry(entry),
