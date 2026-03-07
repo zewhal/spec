@@ -205,6 +205,9 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   function appendLog(message: string): void {
+    if (state.spinnerActive && logLines.length > 0 && logLines[logLines.length - 1]?.startsWith("[")) {
+      logLines.pop();
+    }
     stopSpinner();
     state.spinnerActive = false;
     logLines.push(message);
@@ -216,7 +219,7 @@ export async function runTui(specs: string[]): Promise<void> {
     const frame = frames[spinnerFrameIndex % frames.length] ?? "[|]";
     spinnerFrameIndex += 1;
     const line = `${frame} ${state.spinnerLabel}`;
-    if (state.spinnerActive && logLines.length > 0 && logLines[logLines.length - 1]?.startsWith("[")) {
+    if (logLines.length > 0 && logLines[logLines.length - 1]?.startsWith("[")) {
       logLines[logLines.length - 1] = line;
     } else {
       logLines.push(line);
