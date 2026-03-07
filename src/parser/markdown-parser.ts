@@ -1,5 +1,4 @@
 import MarkdownIt from "markdown-it";
-import type Token from "markdown-it/lib/token.mjs";
 
 import { rawSuiteDocumentSchema, rawTestCaseSchema, type RawSuiteDocument, type RawTestCase } from "./raw-models";
 
@@ -51,7 +50,7 @@ export function parseMarkdownToRaw(markdown: string): RawSuiteDocument {
   return rawSuiteDocumentSchema.parse(suite);
 }
 
-function collectHeadings(tokens: Token[]): HeadingInfo[] {
+function collectHeadings(tokens: MarkdownItToken[]): HeadingInfo[] {
   const headings: HeadingInfo[] = [];
   tokens.forEach((token, index) => {
     if (token.type !== "heading_open") {
@@ -109,24 +108,32 @@ function sectionEndForTest(headings: HeadingInfo[], index: number, fallback: num
   return fallback;
 }
 
-function extractKeyValues(tokens: Token[], sectionStart: number, sectionEnd: number): Record<string, string> {
+function extractKeyValues(tokens: MarkdownItToken[], sectionStart: number, sectionEnd: number): Record<string, string> {
   const keyValues: Record<string, string> = {};
-  for (const line of extractSectionItems(tokens, sectionStart, sectionEnd)) {
+  for (const line of extractInlineLines(tokens, sectionStart, sectionEnd)) {
     if (!line.includes(":")) {
       continue;
     }
     const [key, ...rest] = line.split(":");
+    if (!key) {
+      continue;
+    }
     keyValues[key.trim()] = rest.join(":").trim();
   }
   return keyValues;
 }
 
-function extractSectionItems(tokens: Token[], sectionStart: number, sectionEnd: number): string[] {
+function extractSectionItems(tokens: MarkdownItToken[], sectionStart: number, sectionEnd: number): string[] {
   const listItems = extractListItems(tokens, sectionStart, sectionEnd);
-  return listItems.length > 0 ? listItems : extractInlineLines(tokens, sectionStart, sectionEnd);
+  if (listItems.length > 0) {
+    return listItems;
+  }
+
+  const inlineLines = extractInlineLines(tokens, sectionStart, sectionEnd);
+  return mergeParagraphLines(inlineLines);
 }
 
-function extractListItems(tokens: Token[], start: number, end: number): string[] {
+function extractListItems(tokens: MarkdownItToken[], start: number, end: number): string[] {
   const items: string[] = [];
   let collecting = false;
   let currentParts: string[] = [];
@@ -154,7 +161,7 @@ function extractListItems(tokens: Token[], start: number, end: number): string[]
   return items;
 }
 
-function extractInlineLines(tokens: Token[], start: number, end: number): string[] {
+function extractInlineLines(tokens: MarkdownItToken[], start: number, end: number): string[] {
   const lines: string[] = [];
   for (const token of tokens.slice(start, end)) {
     if (token.type !== "inline") {
@@ -170,11 +177,19 @@ function extractInlineLines(tokens: Token[], start: number, end: number): string
   return lines;
 }
 
+function mergeParagraphLines(lines: string[]): string[] {
+  if (lines.length <= 1) {
+    return lines;
+  }
+  const merged = lines.join(" ").replace(/\s+/gu, " ").trim();
+  return merged ? [merged] : [];
+}
+
 function parseTestSection(
   sectionTitle: string,
   sectionStart: number,
   sectionEnd: number,
-  tokens: Token[],
+  tokens: MarkdownItToken[],
   headings: HeadingInfo[],
 ): RawTestCase {
   const rawTest = rawTestCaseSchema.parse({
@@ -192,9 +207,21 @@ function parseTestSection(
     .sort((left, right) => left.tokenIndex - right.tokenIndex);
 
   if (subsectionHeadings.length === 0) {
-    const [steps, expectations] = splitStepsAndExpectations(extractSectionItems(tokens, sectionStart, sectionEnd));
+    const items = extractSectionItems(tokens, sectionStart, sectionEnd);
+    const [steps, expectations] = splitStepsAndExpectations(items);
     rawTest.steps = steps;
     rawTest.expectations = expectations;
+    rawTest.authoring_mode = inferAuthoringMode({
+      steps,
+      expectations,
+      rawBlock: rawTest.raw_block,
+      freeflowBlock: items.join("\n"),
+    });
+    if (rawTest.authoring_mode === "freeflow") {
+      rawTest.freeflow_block = items.join("\n").trim();
+      rawTest.steps = [];
+      rawTest.expectations = [];
+    }
     return rawTestCaseSchema.parse(rawTest);
   }
 
@@ -224,7 +251,66 @@ function parseTestSection(
     rawTest.expectations = expectations;
   }
 
+  rawTest.authoring_mode = inferAuthoringMode({
+    steps: rawTest.steps,
+    expectations: rawTest.expectations,
+    rawBlock: rawTest.raw_block,
+    freeflowBlock: rawTest.raw_block,
+  });
+  if (rawTest.authoring_mode === "freeflow") {
+    rawTest.freeflow_block = rawTest.raw_block.trim();
+    rawTest.steps = [];
+    rawTest.expectations = [];
+  }
+
   return rawTestCaseSchema.parse(rawTest);
+}
+
+function inferAuthoringMode(input: {
+  steps: string[];
+  expectations: string[];
+  rawBlock: string;
+  freeflowBlock: string;
+}): "auto" | "fixed" | "freeflow" {
+  if (input.expectations.length > 0) {
+    return "fixed";
+  }
+
+  if (input.steps.length > 1) {
+    return "fixed";
+  }
+
+  if (input.steps.length === 1) {
+    const loneStep = input.steps[0]?.trim() ?? "";
+    const sentenceCount = loneStep.split(/[.!?]\s+/u).filter((segment) => segment.trim().length > 0).length;
+    const commaCount = loneStep.split(",").length - 1;
+    const narrativeVerbCount = (loneStep.match(/\b(open|click|go|navigate|fill|enter|confirm|verify|select|continue|wait)\b/giu) ?? []).length;
+    const hasConnector = /\b(and|then|after|before|while)\b/iu.test(loneStep);
+    if (sentenceCount <= 1 && commaCount === 0 && narrativeVerbCount <= 1) {
+      return "fixed";
+    }
+    if (commaCount > 0 || narrativeVerbCount > 1 || hasConnector) {
+      return "freeflow";
+    }
+  }
+
+  const prose = input.freeflowBlock.trim() || input.rawBlock.trim();
+  if (!prose) {
+    return "auto";
+  }
+
+  const lines = prose
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const sentenceCount = prose.split(/[.!?]\s+/u).filter((segment) => segment.trim().length > 0).length;
+  const hasNarrative = /\b(then|after|before|when|should|verify|confirm|open|click|fill|enter|login|sign in)\b/iu.test(prose);
+
+  if (lines.length <= 2 && sentenceCount >= 1 && hasNarrative) {
+    return "freeflow";
+  }
+
+  return "auto";
 }
 
 function normalizeTestSubsectionKey(title: string): string | null {
@@ -335,6 +421,9 @@ function parseKeyValuesFromItems(items: string[]): Record<string, string> {
       continue;
     }
     const [key, ...rest] = item.split(":");
+    if (!key) {
+      continue;
+    }
     values[key.trim()] = rest.join(":").trim();
   }
   return values;

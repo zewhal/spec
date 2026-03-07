@@ -14,6 +14,7 @@ import type { RawSuiteDocument, RawTestCase } from "./raw-models";
 export class SpecNormalizationError extends Error {}
 
 export type NormalizerConfig = {
+  authoring_mode?: "auto" | "fixed" | "freeflow";
   strict_mode?: boolean;
   llm_model?: string;
   llm_temperature?: number;
@@ -24,6 +25,7 @@ export type NormalizerConfig = {
 
 const defaultNormalizerConfig: Required<NormalizerConfig> = {
   strict_mode: false,
+  authoring_mode: "auto",
   llm_model: DEFAULT_MINIMAX_MODEL,
   llm_temperature: 1,
   llm_max_attempts: 2,
@@ -144,9 +146,13 @@ export class SpecNormalizer {
     const testId = slugify(rawTest.name) || `test-${index}`;
     let parsedSteps = [...rawTest.steps];
     let parsedExpectations = [...rawTest.expectations];
+    const authoringMode = this.resolveAuthoringMode(rawTest);
 
-    if (this.config.llm_parse_tests && this.requiresOutlineExtraction(rawTest)) {
-      const outline = await this.llmClient.extractTestOutline(rawTest.name, rawTest.raw_block || rawTest.steps.join("\n"));
+    if (this.config.llm_parse_tests && this.requiresOutlineExtraction(rawTest, authoringMode)) {
+      const outline = await this.llmClient.extractTestOutline(
+        rawTest.name,
+        rawTest.freeflow_block || rawTest.raw_block || rawTest.steps.join("\n"),
+      );
       const outlinedSteps = Array.isArray(outline.steps) ? outline.steps.map((item) => String(item).trim()).filter(Boolean) : [];
       const outlinedExpectations = Array.isArray(outline.expectations)
         ? outline.expectations.map((item) => String(item).trim()).filter(Boolean)
@@ -224,8 +230,30 @@ export class SpecNormalizer {
     return expectationSchema.parse(expectationData);
   }
 
-  private requiresOutlineExtraction(rawTest: RawTestCase): boolean {
-    return this.config.llm_parse_tests && rawTest.raw_block.trim().length > 0;
+  private requiresOutlineExtraction(rawTest: RawTestCase, authoringMode: "auto" | "fixed" | "freeflow"): boolean {
+    if (!this.config.llm_parse_tests) {
+      return false;
+    }
+    if (authoringMode === "fixed") {
+      return false;
+    }
+    return (rawTest.freeflow_block || rawTest.raw_block).trim().length > 0;
+  }
+
+  private resolveAuthoringMode(rawTest: RawTestCase): "auto" | "fixed" | "freeflow" {
+    if (this.config.authoring_mode && this.config.authoring_mode !== "auto") {
+      return this.config.authoring_mode;
+    }
+    if (rawTest.authoring_mode === "fixed" || rawTest.authoring_mode === "freeflow") {
+      return rawTest.authoring_mode;
+    }
+    if (rawTest.steps.length > 0 || rawTest.expectations.length > 0) {
+      return "fixed";
+    }
+    if ((rawTest.freeflow_block || rawTest.raw_block).trim().length > 0) {
+      return "freeflow";
+    }
+    return "auto";
   }
 
   private sanitizeActionPayload(payload: Record<string, unknown>): Record<string, unknown> {

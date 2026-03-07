@@ -71,6 +71,24 @@ base_url: http://localhost:3000
     "URL should contain /en/login",
     'Text "Sign in" should be visible',
   ]);
+  expect(raw.tests[0]?.authoring_mode).toBe("fixed");
+});
+
+test("parser marks prose-style tests as freeflow under auto mode", () => {
+  const markdown = `
+# Suite: Guided Authoring
+
+## Test: Shopper checks out
+
+Open the storefront, add the featured product to the cart, go to checkout, and confirm the thank-you screen appears.
+`;
+
+  const raw = parseMarkdownToRaw(markdown);
+  expect(raw.tests).toHaveLength(1);
+  expect(raw.tests[0]?.authoring_mode).toBe("freeflow");
+  expect(raw.tests[0]?.freeflow_block).toContain("Open the storefront");
+  expect(raw.tests[0]?.steps).toEqual([]);
+  expect(raw.tests[0]?.expectations).toEqual([]);
 });
 
 test("defaultCompiledOutputPath uses compiled directory for markdown files", async () => {

@@ -3,11 +3,13 @@ import { z } from "zod";
 export const rawTestCaseSchema = z
   .object({
     name: z.string(),
+    authoring_mode: z.enum(["auto", "fixed", "freeflow"]).default("auto"),
     tags: z.array(z.string()).default([]),
     preconditions: z.array(z.string()).default([]),
     steps: z.array(z.string()).default([]),
     expectations: z.array(z.string()).default([]),
     raw_block: z.string().default(""),
+    freeflow_block: z.string().default(""),
     notes: z.array(z.string()).default([]),
     retry_policy: z.record(z.string(), z.string()).default({}),
   })
