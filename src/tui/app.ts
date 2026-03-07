@@ -2,7 +2,24 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { Box, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, TextRenderable, stringToStyledText, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
+import {
+  Box,
+  ScrollBoxRenderable,
+  SelectRenderable,
+  SelectRenderableEvents,
+  TextRenderable,
+  StyledText,
+  brightCyan,
+  brightGreen,
+  brightRed,
+  brightYellow,
+  dim,
+  stringToStyledText,
+  createCliRenderer,
+  instantiate,
+  type KeyEvent,
+  type TextChunk,
+} from "@opentui/core";
 
 import { findProjectConfigPath, loadProjectConfig } from "../config";
 import { testSuiteSchema } from "../models/suite";
@@ -220,35 +237,92 @@ export async function runTui(specs: string[]): Promise<void> {
     return lines.join("\n");
   }
 
-  function renderStyledLogText() {
+  function renderStyledLogText(): StyledText {
     if (logEntries.length === 0) {
       return stringToStyledText("No logs yet. Start a run to see live execution output.");
     }
 
-    return stringToStyledText(
-      logEntries
-        .map((entry) => renderEntry(entry))
-        .join("\n\n"),
-    );
-  }
-
-  function renderEntry(entry: LogEntry): string {
-    const badge = entryBadge(entry.kind);
-    const lines = [`${badge} ${entry.title}`];
-    if (entry.body && entry.body !== entry.title) {
-      if (entry.kind === "llm-json") {
-        lines.push("```json");
-        lines.push(indentBlock(prettyJson(entry.body)));
-        lines.push("```");
-      } else if (entry.kind === "llm-prompt") {
-        lines.push("```text");
-        lines.push(indentBlock(entry.body));
-        lines.push("```");
-      } else {
-        lines.push(indentBlock(entry.body));
+    const parts: Array<string | TextChunk | StyledText> = [];
+    for (const [index, entry] of logEntries.entries()) {
+      parts.push(renderStyledEntry(entry));
+      if (index < logEntries.length - 1) {
+        parts.push("\n\n");
       }
     }
-    return lines.join("\n");
+    return concatStyled(parts);
+  }
+
+  function renderStyledEntry(entry: LogEntry): StyledText {
+    if (entry.kind === "llm-prompt") {
+      const body = entry.body ?? entry.title;
+      const lines = [entry.title, "", ...body.split("\n")];
+      const aligned = alignRightBlock(lines);
+      return concatStyled([brightYellow("YOU -> LLM"), "\n", aligned]);
+    }
+
+    if (entry.kind === "llm-json") {
+      const jsonBody = prettyJson(entry.body ?? "{}");
+      return concatStyled([brightCyan("LLM -> SPEC"), "\n", "```json\n", jsonBody, "\n```"]);
+    }
+
+    if (entry.kind === "result-pass") {
+      return concatStyled([brightGreen("PASS"), ` ${entry.title}`, entry.body ? `\n${entry.body}` : ""]);
+    }
+
+    if (entry.kind === "result-fail") {
+      return concatStyled([brightRed("FAIL"), ` ${entry.title}`, entry.body ? `\n${entry.body}` : ""]);
+    }
+
+    if (entry.kind === "result-info") {
+      return concatStyled([brightCyan("INFO"), ` ${entry.title}`, entry.body ? `\n${entry.body}` : ""]);
+    }
+
+    return concatStyled([dim("LOG"), ` ${entry.title}`, entry.body && entry.body !== entry.title ? `\n${entry.body}` : ""]);
+  }
+
+  function alignRightBlock(lines: string[]): string {
+    const width = estimateLogPaneWidth();
+    return lines
+      .flatMap((line) => wrapLine(line, width))
+      .map((line) => `${" ".repeat(Math.max(0, width - line.length))}${line}`)
+      .join("\n");
+  }
+
+  function estimateLogPaneWidth(): number {
+    const columns = Number(process.stdout.columns ?? 120);
+    const reserved = 36;
+    return Math.max(36, columns - reserved);
+  }
+
+  function wrapLine(value: string, width: number): string[] {
+    if (value.length <= width) {
+      return [value];
+    }
+
+    const chunks: string[] = [];
+    let remaining = value;
+    while (remaining.length > width) {
+      chunks.push(remaining.slice(0, width));
+      remaining = remaining.slice(width);
+    }
+    if (remaining.length > 0) {
+      chunks.push(remaining);
+    }
+    return chunks;
+  }
+
+  function concatStyled(parts: Array<string | TextChunk | StyledText>): StyledText {
+    const chunks: TextChunk[] = [];
+    for (const part of parts) {
+      if (typeof part === "string") {
+        chunks.push(...stringToStyledText(part).chunks);
+      } else if (part instanceof StyledText) {
+        chunks.push(...part.chunks);
+      } else {
+        chunks.push(part);
+      }
+    }
+    return new StyledText(chunks);
   }
 
   function entryBadge(kind: LogEntryKind): string {
@@ -266,13 +340,6 @@ export async function runTui(specs: string[]): Promise<void> {
       default:
         return "LOG";
     }
-  }
-
-  function indentBlock(value: string): string {
-    return value
-      .split("\n")
-      .map((line) => `  ${line}`)
-      .join("\n");
   }
 
   function prettyJson(value: string): string {

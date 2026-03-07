@@ -173,16 +173,27 @@ export class SpecNormalizer {
       }
     }
 
-    const steps =
-      authoringMode === "fixed"
-        ? parsedSteps.map((step, stepIndex) => this.normalizeFixedStepText(rawTest.name, step, resolvedVariables, stepIndex + 1))
-        : await Promise.all(parsedSteps.map((step, stepIndex) => this.normalizeStepText(step, resolvedVariables, stepIndex + 1)));
-    const expectations =
-      authoringMode === "fixed"
-        ? parsedExpectations.map((expectation, expectIndex) => this.normalizeFixedExpectationText(expectation, expectIndex + 1))
-        : await Promise.all(
-            parsedExpectations.map((expectation, expectIndex) => this.normalizeExpectationText(expectation, expectIndex + 1)),
-          );
+    const steps: Action[] = [];
+    if (authoringMode === "fixed") {
+      for (const [stepIndex, step] of parsedSteps.entries()) {
+        steps.push(this.normalizeFixedStepText(rawTest.name, step, resolvedVariables, stepIndex + 1));
+      }
+    } else {
+      for (const [stepIndex, step] of parsedSteps.entries()) {
+        steps.push(await this.normalizeStepText(step, resolvedVariables, stepIndex + 1));
+      }
+    }
+
+    const expectations: Expectation[] = [];
+    if (authoringMode === "fixed") {
+      for (const [expectIndex, expectation] of parsedExpectations.entries()) {
+        expectations.push(this.normalizeFixedExpectationText(expectation, expectIndex + 1));
+      }
+    } else {
+      for (const [expectIndex, expectation] of parsedExpectations.entries()) {
+        expectations.push(await this.normalizeExpectationText(expectation, expectIndex + 1));
+      }
+    }
 
     return {
       id: testId,
