@@ -81,7 +81,7 @@ export async function runTui(specs: string[]): Promise<void> {
 
   function introContent(): void {
     const pulseColor = ["#4cc9f0", "#7bdff2", "#c8f7ff", "#7bdff2"][introPulse % 4] ?? "#4cc9f0";
-    header.setContent(` {bold}spec{/bold} {gray-fg}- Markdown -> Runtime -> Bun{/gray-fg} {right}{${pulseColor}-fg}live{/}`);
+    header.setContent(" spec - Markdown -> Runtime -> Bun - live ");
     const compact = (screen.width as number) < 110 || (screen.height as number) < 30;
     heroBox.setContent([
       "",
