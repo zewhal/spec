@@ -24,6 +24,7 @@
     "markdown-it": "^14.1.1",
     "neo-blessed": "^0.2.0",
     "picocolors": "^1.1.1",
+    "playwright": "^1.58.2",
     "slugify": "^1.6.6",
     "smol-toml": "^1.6.0",
     "zod": "^4.3.6"
