@@ -120,7 +120,7 @@ export async function runTui(specs: string[]): Promise<void> {
     Box(
       { flexGrow: 1, height: "100%", flexDirection: "column", gap: 1 },
       Box({ width: "100%", height: 12, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#111f2d", padding: 1 }, Box({ id: "status-scroll-host", width: "100%", height: "100%" })),
-      Box({ width: "100%", flexGrow: 1, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 1 }, Box({ id: "log-host", width: "100%", height: "100%" })),
+      Box({ width: "100%", flexGrow: 1, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 0 }, Box({ id: "log-host", width: "100%", height: "100%" })),
     ),
   );
 
@@ -129,7 +129,13 @@ export async function runTui(specs: string[]): Promise<void> {
   const introView = instantiate(renderer, introViewNode);
   const runnerView = instantiate(renderer, runnerViewNode);
   const statusScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "top", rootOptions: { backgroundColor: "#111f2d" } });
-  const logScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "bottom", rootOptions: { backgroundColor: "#08121b" } });
+  const logScroll = new ScrollBoxRenderable(renderer, {
+    width: "100%",
+    height: "100%",
+    stickyScroll: true,
+    stickyStart: "bottom",
+    rootOptions: { backgroundColor: "#08121b", padding: 1 },
+  });
   statusScroll.add(statusText);
   logScroll.add(logText);
   runnerView.findDescendantById("status-scroll-host")?.add(statusScroll);
@@ -261,17 +267,24 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   function renderChatBubble(side: "left" | "right", label: string, body: string, format: "text" | "json"): string {
-    const width = 46;
+    const availableWidth = Math.max(36, Math.min(72, terminalWidthEstimate() - 40));
+    const width = side === "left" ? availableWidth : availableWidth;
     const content = format === "json" ? prettyJson(body) : body;
     const lines = content.split("\n");
-    const top = side === "left" ? `┌─ ${label} ` : `${" ".repeat(18)}┌─ ${label} `;
+    const indent = side === "left" ? 0 : Math.max(0, terminalWidthEstimate() - width - 6);
+    const prefix = " ".repeat(indent);
+    const top = `${prefix}┌─ ${label}`;
     const wrapped = lines.flatMap((line) => wrapLine(line, width));
     const bubble = wrapped.map((line) => {
       const padded = line.padEnd(width, " ");
-      return side === "left" ? `│ ${padded} │` : `${" ".repeat(18)}│ ${padded} │`;
+      return `${prefix}│ ${padded} │`;
     });
-    const bottom = side === "left" ? `└${"─".repeat(width + 2)}┘` : `${" ".repeat(18)}└${"─".repeat(width + 2)}┘`;
+    const bottom = `${prefix}└${"─".repeat(width + 2)}┘`;
     return [top, ...bubble, bottom].join("\n");
+  }
+
+  function terminalWidthEstimate(): number {
+    return Number(process.stdout.columns ?? 100);
   }
 
   function renderBanner(kind: "PASS" | "FAIL" | "INFO", title: string, body?: string): string {
