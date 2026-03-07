@@ -2,14 +2,11 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { log, note, spinner } from "@clack/prompts";
-import slugify from "slugify";
 
 import { findProjectConfigPath, loadProjectConfig } from "./config/project";
 import { resolveLlmModel } from "./integrations";
-import type { Action } from "./models/action";
-import type { Expectation } from "./models/expectation";
 import { testSuiteSchema, type TestSuite } from "./models/suite";
-import { loadMarkdown, listMarkdownSpecs } from "./parser/markdown-loader";
+import { listMarkdownSpecs } from "./parser/markdown-loader";
 import { SpecNormalizer, type NormalizerConfig } from "./parser/normalizer";
 import { parseMarkdownToRaw } from "./parser/markdown-parser";
 import { compiledPlanIsFresh, defaultCompiledOutputPath, fileSha256, writeCompiledPlan } from "./runtime/persistence";
@@ -23,30 +20,6 @@ type ParsedArgs = {
   command: CliCommand;
   positionals: string[];
   options: Record<string, string | boolean | string[]>;
-};
-
-type RunArtifacts = {
-  suiteDir: string;
-  resultJson: string;
-  reportMd: string;
-  reportHtml: string;
-  summaryJson: string;
-};
-
-type SuiteRunResult = {
-  suite_id: string;
-  suite_name: string;
-  status: "passed" | "skipped";
-  tests: Array<{
-    id: string;
-    name: string;
-    status: "passed" | "skipped";
-    steps: Array<{ kind: string; status: "passed" }>;
-    expectations: Array<{ kind: string; status: "passed" }>;
-  }>;
-  duration_ms: number;
-  artifacts_root: string;
-  final_url: string;
 };
 
 const helpText = `spec CLI for markdown-to-browser execution.
@@ -166,105 +139,6 @@ async function discoverSpecs(startPath: string = process.cwd()): Promise<string[
   return matches.sort();
 }
 
-function buildSuiteFromRaw(specPath: string, strictMode: boolean): TestSuite {
-  const config = loadProjectConfig(findProjectConfigPath(specPath));
-  const raw = parseMarkdownToRaw(readFileSync(specPath, "utf8"));
-  const suiteId = slugify(raw.name, { lower: true, strict: true }) || path.parse(specPath).name;
-
-  const parseActions = (items: string[]): Action[] =>
-    items.map((item, index) => ({
-      id: `${suiteId}-step-${index + 1}`,
-      kind: "comment",
-      text: item,
-    }));
-
-  const parseExpectations = (items: string[]): Expectation[] =>
-    items.map((item, index) => {
-      const lower = item.toLowerCase();
-      if (lower.startsWith("url should contain ")) {
-        return {
-          id: `${suiteId}-expectation-${index + 1}`,
-          kind: "url_contains",
-          value: item.slice("URL should contain ".length),
-          soft: false,
-        } satisfies Expectation;
-      }
-      if (lower.startsWith("url should be ")) {
-        return {
-          id: `${suiteId}-expectation-${index + 1}`,
-          kind: "url_is",
-          value: item.slice("URL should be ".length),
-          soft: false,
-        } satisfies Expectation;
-      }
-      if (lower.startsWith('text "') && lower.endsWith('" should be visible')) {
-        return {
-          id: `${suiteId}-expectation-${index + 1}`,
-          kind: "text_visible",
-          text: item.slice(6, -18),
-          soft: false,
-        } satisfies Expectation;
-      }
-      if (lower.startsWith("a request ") && lower.endsWith(" should happen")) {
-        const middle = item.slice("A request ".length, -" should happen".length).trim();
-        const [method, ...rest] = middle.split(" ");
-        return {
-          id: `${suiteId}-expectation-${index + 1}`,
-          kind: "request_seen",
-          method: (method ?? "GET").toUpperCase(),
-          path: rest.join(" "),
-          soft: false,
-        } satisfies Expectation;
-      }
-      return {
-        id: `${suiteId}-expectation-${index + 1}`,
-        kind: "text_visible",
-        text: item,
-        soft: false,
-      } satisfies Expectation;
-    });
-
-  return testSuiteSchema.parse({
-    id: suiteId,
-    name: raw.name,
-    base_url: raw.config.base_url ?? config.runtime.base_url,
-    browser: raw.config.browser ?? config.runtime.browser,
-    viewport: raw.config.viewport ?? config.runtime.viewport,
-    locale: raw.config.locale ?? config.runtime.locale,
-    variables: raw.variables,
-    datasets: raw.datasets,
-    setup_steps: parseActions(raw.setup_steps),
-    teardown_steps: parseActions(raw.teardown_steps),
-    tests: raw.tests.map((testCase, index) => ({
-      id: slugify(testCase.name, { lower: true, strict: true }) || `${suiteId}-test-${index + 1}`,
-      name: testCase.name,
-      tags: testCase.tags,
-      preconditions: testCase.preconditions,
-      steps: parseActions(testCase.steps),
-      expectations: parseExpectations(testCase.expectations),
-      retry_policy: {
-        max_retries: Number.parseInt(testCase.retry_policy.max_retries ?? "0", 10) || 0,
-        retry_on_flake: (testCase.retry_policy.retry_on_flake ?? "false") === "true",
-      },
-    })),
-    artifact_policy: {
-      capture_on_failure: config.runtime.capture !== "never",
-      capture_console: true,
-      capture_network: true,
-    },
-    runtime_policy: {
-      default_timeout_ms: config.runtime.default_timeout_ms,
-      assertion_timeout_ms: config.runtime.assertion_timeout_ms,
-      locator_resolution_timeout_ms: config.runtime.locator_resolution_timeout_ms,
-      navigation_timeout_ms: config.runtime.navigation_timeout_ms,
-      max_retries: config.runtime.max_retries,
-      retry_on_flake: config.runtime.retry_on_flake,
-      strict_mode: strictMode || config.runtime.strict_mode,
-    },
-    allowed_subdomains: config.runtime.allowed_subdomains,
-  });
-}
-
 async function buildSuiteWithLlm(specPath: string, options: { strictMode: boolean; llmModel?: string; llmTemperature?: number; llmMaxAttempts?: number; onLlmCall?: NormalizerConfig["on_llm_call"] }): Promise<TestSuite> {
   const config = loadProjectConfig(findProjectConfigPath(specPath));
   const raw = parseMarkdownToRaw(readFileSync(specPath, "utf8"));
@@ -286,15 +160,13 @@ async function compileSuites(specPath: string, strictMode: boolean, llmOptions?:
   const suites: TestSuite[] = [];
   for (const spec of specs) {
     suites.push(
-      process.env.OPENAI_API_KEY
-        ? await buildSuiteWithLlm(spec, {
-            strictMode,
-            llmModel: llmOptions?.llmModel,
-            llmTemperature: llmOptions?.llmTemperature,
-            llmMaxAttempts: llmOptions?.llmMaxAttempts,
-            onLlmCall: llmOptions?.onLlmCall,
-          })
-        : buildSuiteFromRaw(spec, strictMode),
+      await buildSuiteWithLlm(spec, {
+        strictMode,
+        llmModel: llmOptions?.llmModel,
+        llmTemperature: llmOptions?.llmTemperature,
+        llmMaxAttempts: llmOptions?.llmMaxAttempts,
+        onLlmCall: llmOptions?.onLlmCall,
+      }),
     );
   }
   return suites;
@@ -335,58 +207,8 @@ async function loadSuitesForExecution(specPath: string, strictMode: boolean, com
   return suites;
 }
 
-async function writeRunArtifacts(outputDir: string, suite: TestSuite, tags: Set<string>): Promise<{ result: SuiteRunResult; artifacts: RunArtifacts }> {
-  const selectedTests = tags.size === 0 ? suite.tests : suite.tests.filter((test) => test.tags.some((tag) => tags.has(tag)));
-  const result: SuiteRunResult = {
-    suite_id: suite.id,
-    suite_name: suite.name,
-    status: selectedTests.length > 0 ? "passed" : "skipped",
-    tests: selectedTests.map((test) => ({
-      id: test.id,
-      name: test.name,
-      status: "passed",
-      steps: test.steps.map((step) => ({ kind: step.kind, status: "passed" })),
-      expectations: test.expectations.map((expectation) => ({ kind: expectation.kind, status: "passed" })),
-    })),
-    duration_ms: 0,
-    artifacts_root: path.join(outputDir, suite.id),
-    final_url: suite.base_url,
-  };
-
-  const suiteDir = path.join(outputDir, suite.id);
-  mkdirSync(suiteDir, { recursive: true });
-
-  const artifacts: RunArtifacts = {
-    suiteDir,
-    resultJson: path.join(suiteDir, "result.json"),
-    reportMd: path.join(suiteDir, "report.md"),
-    reportHtml: path.join(suiteDir, "report.html"),
-    summaryJson: path.join(suiteDir, "summary.json"),
-  };
-
-  await Bun.write(artifacts.resultJson, JSON.stringify(result, null, 2));
-  await Bun.write(artifacts.reportMd, `# ${result.suite_name}\n\nStatus: ${result.status}\n`);
-  await Bun.write(artifacts.reportHtml, `<html><body><h1>${result.suite_name}</h1><p>Status: ${result.status}</p></body></html>`);
-  await Bun.write(
-    artifacts.summaryJson,
-    JSON.stringify(
-      {
-        suite: result.suite_name,
-        status: result.status,
-        artifacts_root: result.artifacts_root,
-        final_url: result.final_url,
-      },
-      null,
-      2,
-    ),
-  );
-
-  return { result, artifacts };
-}
-
 async function runSpecPath(specPath: string, options: { outputDir?: string; compiledOut?: string; tags?: string[]; strictMode?: boolean; compileOnly?: boolean }): Promise<void> {
   const outputDir = path.resolve(options.outputDir ?? ".spec/results");
-  const tags = new Set(options.tags ?? []);
   mkdirSync(outputDir, { recursive: true });
 
   const suites = await loadSuitesForExecution(specPath, options.strictMode ?? false, options.compiledOut, {
@@ -402,18 +224,8 @@ async function runSpecPath(specPath: string, options: { outputDir?: string; comp
     }
 
     const progress = spinner();
-    progress.start(`Running ${suite.name}`);
-    const { result, artifacts } = await writeRunArtifacts(outputDir, suite, tags);
-    progress.stop(`${result.suite_name} ${result.status}`);
-    note(
-      [
-        `Result: ${artifacts.resultJson}`,
-        `Markdown: ${artifacts.reportMd}`,
-        `HTML: ${artifacts.reportHtml}`,
-        `Summary: ${artifacts.summaryJson}`,
-      ].join("\n"),
-      suite.name,
-    );
+    progress.stop(`Direct CLI execution is not wired yet. Use the TUI with \`bun run spec\`.`);
+    note("Compile succeeded, but real execution is currently available through the TUI runner.", suite.name);
   }
 }
 

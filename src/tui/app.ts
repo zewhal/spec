@@ -2,16 +2,17 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import blessed from "neo-blessed";
+import { Box, ScrollBoxRenderable, SelectRenderable, SelectRenderableEvents, Text, createCliRenderer, instantiate, type KeyEvent } from "@opentui/core";
 
 import { findProjectConfigPath, loadProjectConfig } from "../config";
+import { testSuiteSchema } from "../models/suite";
+import { parseMarkdownToRaw } from "../parser/markdown-parser";
+import { SpecNormalizer } from "../parser/normalizer";
+import { loadMarkdown } from "../parser/markdown-loader";
 import type { ExecutionEvent } from "../runtime/events";
 import { EventBus } from "../runtime/events";
 import { SuiteExecutor } from "../runtime/executor";
-import { defaultCompiledOutputPath, fileSha256, compiledPlanIsFresh, persistSuiteOutputs, writeCompiledPlan } from "../runtime/persistence";
-import { loadMarkdown } from "../parser/markdown-loader";
-import { parseMarkdownToRaw } from "../parser/markdown-parser";
-import { SpecNormalizer } from "../parser/normalizer";
+import { compiledPlanIsFresh, defaultCompiledOutputPath, fileSha256, persistSuiteOutputs, writeCompiledPlan } from "../runtime/persistence";
 
 type TestState = {
   name: string;
@@ -20,214 +21,224 @@ type TestState = {
   durationMs: number;
 };
 
-type SuiteState = {
-  name: string;
+type ViewMode = "intro" | "runner";
+
+type AppState = {
+  view: ViewMode;
+  suiteName: string;
+  suiteStatus: string;
   tests: TestState[];
-  status: string;
   passed: number;
   failed: number;
   total: number;
   headless: boolean;
-  modeLabel: string;
+  compileOnly: boolean;
+  lastRunSummary: string;
+  spinnerLabel: string;
+  spinnerActive: boolean;
+  selectedIndex: number;
 };
 
 export async function runTui(specs: string[]): Promise<void> {
-  const screen = blessed.screen({ smartCSR: true, title: "spec" });
-  const state: SuiteState = {
-    name: "",
+  const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  const state: AppState = {
+    view: "intro",
+    suiteName: "",
+    suiteStatus: "idle",
     tests: [],
-    status: "idle",
     passed: 0,
     failed: 0,
     total: 0,
     headless: true,
-    modeLabel: "Compile + Run",
+    compileOnly: false,
+    lastRunSummary: "No runs yet.",
+    spinnerLabel: "Idle",
+    spinnerActive: false,
+    selectedIndex: 0,
   };
+
   const logLines: string[] = [];
-  let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
-  let spinnerActive = false;
-  let spinnerFrameIndex = 0;
-  let spinnerLabel = "Running...";
-  let currentView: "intro" | "runner" = "intro";
-  let introPulse = 0;
-  let introTimer: ReturnType<typeof setInterval> | null = null;
-  let lastRunSummary = "No runs yet";
+  const rendererRoot = renderer.root;
 
-  const header = blessed.box({ top: 0, left: 0, width: "100%", height: 3, content: " spec - Markdown -> Runtime -> Bun ", tags: true, style: { fg: "#f5f7fa", bg: "#10233a" } });
-  const footer = blessed.box({ bottom: 0, left: 0, width: "100%", height: 1, content: " enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit ", style: { fg: "#d9e2ec", bg: "#102a43" } });
+  const footerText = Text({ content: "enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit", fg: "#d9e2ec" });
+  const shellNode = Box(
+    { width: "100%", height: "100%", flexDirection: "column", backgroundColor: "#08111b" },
+    Box({ width: "100%", height: 3, paddingLeft: 1, paddingRight: 1, backgroundColor: "#10233a", justifyContent: "center" }, Text({ content: "spec - Markdown -> Runtime -> Bun - live", fg: "#f5f7fa" })),
+    Box({ id: "body-root", width: "100%", flexGrow: 1, padding: 1, backgroundColor: "#07111b" }),
+    Box({ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "#102a43" }, footerText),
+  );
 
-  const introBackdrop = blessed.box({ top: 3, left: 0, width: "100%", bottom: 1, style: { bg: "#07111b" } });
+  const introHero = Text({ content: "SPEC\n\nWrite markdown. Run real browsers.", fg: "#e6f1f8" });
+  const introStats = Text({ content: "", fg: "#d9e2ec" });
+  const introKeys = Text({ content: "", fg: "#d9e2ec" });
+  const introRecent = Text({ content: "", fg: "#d9e2ec" });
 
-  const introBox = blessed.box({
-    top: 4,
-    left: "center",
-    width: "74%",
-    height: 21,
-    border: "line",
-    label: " Launch Pad ",
-    tags: true,
-    style: { fg: "#f0f4f8", bg: "#0c1824", border: { fg: "#3aaed8" } },
+  const introViewNode = Box(
+    { width: "100%", height: "100%", flexDirection: "column", gap: 1 },
+    Box(
+      { width: "100%", height: 10, borderStyle: "rounded", borderColor: "#3aaed8", backgroundColor: "#0c1824", padding: 1, flexDirection: "row", gap: 2 },
+      Box({ width: "60%", height: "100%", justifyContent: "center" }, introHero),
+      Box({ width: "40%", height: "100%", borderStyle: "single", borderColor: "#4cc9f0", backgroundColor: "#10202d", padding: 1 }, introStats),
+    ),
+    Box(
+      { width: "100%", height: 8, flexDirection: "row", gap: 1 },
+      Box({ width: "32%", height: "100%", borderStyle: "single", borderColor: "#7bdff2", backgroundColor: "#0f1c2a", padding: 1 }, introKeys),
+      Box({ width: "68%", height: "100%", borderStyle: "single", borderColor: "#7bdff2", backgroundColor: "#09131d", padding: 1 }, introRecent),
+    ),
+  );
+
+  const specList = new SelectRenderable(renderer, {
+    id: "spec-list",
+    width: 28,
+    height: 24,
+    options: specs.map((spec) => ({ name: path.basename(spec), description: path.relative(process.cwd(), spec), value: spec })),
+    backgroundColor: "#0f1c2a",
+    textColor: "#d9e2ec",
+    selectedBackgroundColor: "#56c1ff",
+    selectedTextColor: "#000000",
+    descriptionColor: "#7a8b9a",
+    selectedDescriptionColor: "#1f2933",
+    showDescription: false,
   });
 
-  const heroBox = blessed.box({ top: 1, left: 2, width: "60%-1", height: 10, parent: introBox, tags: true, style: { fg: "#f0f4f8", bg: "#0c1824" } });
-  const statsBox = blessed.box({ top: 1, right: 2, width: "34%-1", height: 10, parent: introBox, tags: true, border: "line", label: " Stats ", style: { fg: "#d9e2ec", bg: "#10202d", border: { fg: "#4cc9f0" } } });
-  const actionsBox = blessed.box({ top: 11, left: 2, width: "28%-1", height: 8, parent: introBox, tags: true, border: "line", label: " Keys ", style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#7bdff2" } } });
-  const recentBox = blessed.box({ top: 11, left: "30%", width: "68%-2", height: 8, parent: introBox, tags: true, border: "line", label: " Last Run ", style: { fg: "#d9e2ec", bg: "#09131d", border: { fg: "#7bdff2" } } });
+  const statusText = Text({ content: "", fg: "#f0f4f8" });
+  const logText = Text({ content: "", fg: "#d9e2ec" });
 
-  const runnerShell = blessed.box({ top: 3, left: 0, width: "100%", bottom: 1, hidden: true });
-  const specsPanel = blessed.list({ top: 0, left: 0, width: "30%", bottom: 0, parent: runnerShell, keys: true, vi: true, border: "line", label: " Specs ", items: specs.map((spec) => path.basename(spec)), style: { fg: "#d9e2ec", bg: "#0f1c2a", border: { fg: "#315f7d" }, selected: { bg: "#56c1ff", fg: "black" } } });
-  const statusBox = blessed.box({ top: 0, left: "30%", width: "70%", height: "45%-1", parent: runnerShell, border: "line", label: " Run Status ", tags: false, scrollable: true, alwaysScroll: true, style: { fg: "#f0f4f8", bg: "#111f2d", border: { fg: "#315f7d" } } });
-  const logBox = blessed.log({ top: "45%+2", left: "30%", width: "70%", bottom: 0, parent: runnerShell, border: "line", label: " Execution Log ", tags: false, scrollback: 200, style: { fg: "#d9e2ec", bg: "#08121b", border: { fg: "#315f7d" } } });
+  const runnerViewNode = Box(
+    { width: "100%", height: "100%", flexDirection: "row", gap: 1 },
+    Box({ width: 30, height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#0f1c2a", padding: 1 }, specList),
+    Box(
+      { flexGrow: 1, height: "100%", flexDirection: "column", gap: 1 },
+      Box({ width: "100%", height: 12, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#111f2d", padding: 1 }, Box({ id: "status-scroll-host", width: "100%", height: "100%" })),
+      Box({ width: "100%", flexGrow: 1, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 1 }, Box({ id: "log-scroll-host", width: "100%", height: "100%" })),
+    ),
+  );
 
-  function introContent(): void {
-    const pulseColor = ["#4cc9f0", "#7bdff2", "#c8f7ff", "#7bdff2"][introPulse % 4] ?? "#4cc9f0";
-    header.setContent(" spec - Markdown -> Runtime -> Bun - live ");
-    const compact = (screen.width as number) < 110 || (screen.height as number) < 30;
-    heroBox.setContent([
-      "",
-      ...(compact
-        ? [
-            ` {${pulseColor}-fg}{bold}SPEC{/bold}{/}`,
-            "",
-            " {bold}Markdown -> LLM -> Playwright{/bold}",
-            "",
-            " Open the runner, pick a spec, and execute.",
-          ]
-        : [
-            ` {${pulseColor}-fg}  _____ ____  ______ _____{/}`,
-            ` {${pulseColor}-fg} / ___// __ \\/ ____// ___/{/}`,
-            ` {${pulseColor}-fg} \__ \\/ /_/ / __/   \__ \\ {/}`,
-            ` {${pulseColor}-fg}___/ / ____/ /___  ___/ /{/}`,
-            ` {${pulseColor}-fg}/____/_/   /_____//____/ {/}`,
-            "",
-            " {bold}Launch markdown specs into LLM-guided Playwright runs{/bold}",
-            "",
-            " Spec feels best when it opens like a tool, not a menu.",
-          ]),
-      ` {gray-fg}Current mode{/gray-fg}: ${state.modeLabel}`,
-      ` {gray-fg}Browser{/gray-fg}: ${state.headless ? "Headless" : "Headful"}`,
-    ].join("\n"));
-    statsBox.setContent([
-      "",
-      ` {bold}Specs{/bold}        ${specs.length}`,
-      "",
-      " {bold}Mode{/bold}",
-      ` ${state.modeLabel}`,
-      "",
-      " {bold}Browser{/bold}",
-      ` ${state.headless ? "Headless" : "Headful"}`,
-      "",
-      " {bold}Logs{/bold}",
-      " Clipboard + file export",
-    ].join("\n"));
-    actionsBox.setContent([
-      "",
-      " {bold}enter{/bold} open",
-      " {bold}h{/bold}     browser",
-      " {bold}c{/bold}     mode",
-      " {bold}y{/bold}     logs",
-      " {bold}esc{/bold}   home",
-      " {bold}q{/bold}     quit",
-    ].join("\n"));
-    recentBox.setContent([
-      "",
-      ` ${lastRunSummary}`,
-      "",
-      " Updated after each suite run.",
-    ].join("\n"));
+  const shell = instantiate(renderer, shellNode);
+  const body = shell.findDescendantById("body-root");
+  const introView = instantiate(renderer, introViewNode);
+  const runnerView = instantiate(renderer, runnerViewNode);
+  const statusScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "top", rootOptions: { backgroundColor: "#111f2d" } });
+  const logScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "bottom", rootOptions: { backgroundColor: "#08121b" } });
+  statusScroll.add(instantiate(renderer, statusText));
+  logScroll.add(instantiate(renderer, logText));
+  runnerView.findDescendantById("status-scroll-host")?.add(statusScroll);
+  runnerView.findDescendantById("log-scroll-host")?.add(logScroll);
+  body?.add(introView);
+  rendererRoot.add(shell);
+
+  let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
+  let spinnerFrameIndex = 0;
+
+  function setText(target: { content: string | unknown }, value: string): void {
+    target.content = value;
   }
 
-  function showIntro(): void {
-    currentView = "intro";
-    introContent();
-    introBackdrop.show();
-    introBox.show();
-    runnerShell.hide();
-    screen.render();
+  function render(): void {
+    setText(introStats, [
+      `Specs: ${specs.length}`,
+      "",
+      `Mode: ${state.compileOnly ? "Compile Only" : "Compile + Run"}`,
+      `Browser: ${state.headless ? "Headless" : "Headful"}`,
+      `Spinner: ${state.spinnerActive ? state.spinnerLabel : "Idle"}`,
+      "",
+      "Auto mode prefers fixed parsing first.",
+    ].join("\n"));
+
+    setText(introKeys, [
+      "enter  open runner",
+      "h      toggle browser",
+      "c      toggle mode",
+      "y      copy logs",
+      "esc    go home",
+      "q      quit",
+    ].join("\n"));
+
+    setText(introRecent, state.lastRunSummary);
+
+    setText(statusText, renderStatusText());
+    setText(logText, logLines.join("\n"));
+
+    if (state.view === "intro") {
+      body?.remove(runnerView.id);
+      if (body && !body.findDescendantById(introView.id)) {
+        body.add(introView);
+      }
+      setText(footerText, "enter open runner  h headless  c compile-only  q quit");
+    } else {
+      body?.remove(introView.id);
+      if (body && !body.findDescendantById(runnerView.id)) {
+        body.add(runnerView);
+      }
+      setText(footerText, "esc home  r run  h headless  c compile-only  y copy logs  q quit");
+      specList.focus();
+    }
+
+    renderer.requestRender();
   }
 
-  function showRunner(): void {
-    currentView = "runner";
-    introBackdrop.hide();
-    introBox.hide();
-    runnerShell.show();
-    specsPanel.focus();
-    screen.render();
-  }
-
-  function renderStatus(): void {
-    const lines: string[] = [];
-    if (state.status === "idle") {
-      lines.push(
+  function renderStatusText(): string {
+    if (state.suiteStatus === "idle") {
+      return [
         "Session Ready",
         "",
         `Browser mode: ${state.headless ? "Headless" : "Headful"}`,
-        `Workflow: ${state.modeLabel}`,
-        "Runner state: Idle",
+        `Workflow: ${state.compileOnly ? "Compile Only" : "Compile + Run"}`,
+        `Spinner: ${state.spinnerActive ? state.spinnerLabel : "Idle"}`,
         "",
-        "Select a spec on the left and press r to start.",
-        "Press h to toggle browser mode.",
-        "Press c to switch compile-only mode.",
-      );
-    } else {
-      lines.push(state.name || "Active Suite", `Status: ${state.status === "running" ? "Running" : "Complete"}`);
-      if (state.total > 0) {
-        lines.push("", `Passed ${state.passed}   Failed ${state.failed}   Total ${state.total}`);
-      }
-      lines.push("");
-      for (const test of state.tests) {
-        const icon = test.status === "passed" ? "✓" : test.status === "failed" ? "✗" : test.status === "running" ? "●" : "○";
-        lines.push(`${icon} ${test.name}${test.durationMs ? ` (${test.durationMs}ms)` : ""}`);
-        if (test.status === "running" && test.currentStep) {
-          lines.push(`  ${test.currentStep}`);
-        }
-      }
-      lines.push("", state.status === "running" ? "Press Ctrl+C to stop" : "Choose another spec on the left to run again.");
+        "Select a spec and press r to start.",
+      ].join("\n");
     }
-    statusBox.setContent(lines.join("\n"));
-    screen.render();
+
+    const lines = [state.suiteName || "Active Suite", `Status: ${state.suiteStatus}`, "", `Passed ${state.passed}   Failed ${state.failed}   Total ${state.total}`, ""];
+    for (const test of state.tests) {
+      const icon = test.status === "passed" ? "[pass]" : test.status === "failed" ? "[fail]" : test.status === "running" ? "[run]" : "[wait]";
+      lines.push(`${icon} ${test.name}${test.durationMs ? ` (${test.durationMs}ms)` : ""}`);
+      if (test.currentStep) {
+        lines.push(`  ${test.currentStep}`);
+      }
+    }
+    if (state.spinnerActive) {
+      lines.push("", `Spinner: ${state.spinnerLabel}`);
+    }
+    return lines.join("\n");
   }
 
   function appendLog(message: string): void {
-    spinnerActive = false;
     stopSpinner();
+    state.spinnerActive = false;
     logLines.push(message);
-    logBox.log(message);
-    screen.render();
+    render();
   }
 
   function updateSpinnerLine(): void {
-    const frame = ["[|]", "[/]", "[-]", "[\\]"][spinnerFrameIndex % 4] ?? "[|]";
+    const frames = ["[|]", "[/]", "[-]", "[\\]"];
+    const frame = frames[spinnerFrameIndex % frames.length] ?? "[|]";
     spinnerFrameIndex += 1;
-    const line = `${frame} ${spinnerLabel}`;
-    if (spinnerActive && logLines.length > 0) {
+    const line = `${frame} ${state.spinnerLabel}`;
+    if (state.spinnerActive && logLines.length > 0 && logLines[logLines.length - 1]?.startsWith("[")) {
       logLines[logLines.length - 1] = line;
     } else {
       logLines.push(line);
-      spinnerActive = true;
     }
-    logBox.setContent(logLines.join("\n"));
-    screen.render();
-    scheduleSpinner();
-  }
-
-  function scheduleSpinner(): void {
-    if (!spinnerActive) {
-      return;
-    }
-    stopSpinner();
+    render();
     spinnerTimer = setTimeout(updateSpinnerLine, 120);
   }
 
-  function startSpinner(): void {
-    spinnerActive = true;
+  function startSpinner(label: string): void {
+    stopSpinner();
+    state.spinnerLabel = label;
+    state.spinnerActive = true;
+    spinnerFrameIndex = 0;
     updateSpinnerLine();
   }
 
   function setSpinner(label: string): void {
-    spinnerLabel = label;
-    if (spinnerActive) {
+    state.spinnerLabel = label;
+    if (state.spinnerActive) {
       updateSpinnerLine();
+    } else {
+      render();
     }
   }
 
@@ -244,18 +255,18 @@ export async function runTui(specs: string[]): Promise<void> {
       return;
     }
 
-    const logText = `${logLines.join("\n").trim()}\n`;
-    const logPath = writeLogSnapshot(logText);
-    const copied = copyToClipboard(logText);
+    const logTextValue = `${logLines.join("\n").trim()}\n`;
+    const logPath = writeLogSnapshot(logTextValue);
+    const copied = copyToClipboard(logTextValue);
     appendLog(copied ? `Copied execution log to clipboard and saved ${logPath}` : `Clipboard unavailable. Saved execution log to ${logPath}`);
   }
 
-  function writeLogSnapshot(logText: string): string {
+  function writeLogSnapshot(logTextValue: string): string {
     const timestamp = new Date().toISOString().replaceAll(":", "-");
     const logDir = path.join(".spec", "logs");
     mkdirSync(logDir, { recursive: true });
     const logPath = path.join(logDir, `execution-${timestamp}.log`);
-    Bun.write(logPath, logText);
+    void Bun.write(logPath, logTextValue);
     return logPath;
   }
 
@@ -268,9 +279,7 @@ export async function runTui(specs: string[]): Promise<void> {
 
     for (const command of commands) {
       const binary = command[0];
-      if (!binary) {
-        continue;
-      }
+      if (!binary) continue;
       const result = spawnSync(binary, command.slice(1), { input: text, encoding: "utf8" });
       if (!result.error && result.status === 0) {
         return true;
@@ -280,9 +289,9 @@ export async function runTui(specs: string[]): Promise<void> {
   }
 
   async function executeSelected(): Promise<void> {
-    const selectedIndex = specsPanel.selected;
-    const specPath = specs[selectedIndex] ?? specs[0];
+    const specPath = specs[state.selectedIndex] ?? specs[0];
     if (!specPath) {
+      appendLog("No specs found.");
       return;
     }
 
@@ -290,63 +299,45 @@ export async function runTui(specs: string[]): Promise<void> {
     state.failed = 0;
     state.total = 0;
     state.tests = [];
-    state.status = "running";
-    renderStatus();
+    state.suiteStatus = "running";
+    state.suiteName = path.basename(specPath);
+    render();
 
     const eventBus = new EventBus();
     const projectConfig = loadProjectConfig(findProjectConfigPath(specPath));
     const compiledPath = defaultCompiledOutputPath(findProjectConfigPath(specPath), specPath);
     appendLog(`Starting: ${path.basename(specPath)}`);
-    appendLog(`Mode: ${state.modeLabel}`);
-    spinnerFrameIndex = 0;
-    spinnerLabel = "Preparing run...";
+    appendLog(`Mode: ${state.compileOnly ? "Compile Only" : "Compile + Run"}`);
 
     eventBus.subscribe({
       onEvent(event: ExecutionEvent) {
         if (event.type === "suite_started") {
-          state.name = String(event.data.suite_name ?? "");
+          state.suiteName = String(event.data.suite_name ?? "");
           state.total = Number(event.data.test_count ?? 0);
-          state.status = "running";
-          state.tests = [];
-          renderStatus();
-          appendLog(`Suite started: ${state.name}`);
         }
         if (event.type === "test_started") {
-          const testName = String(event.data.test_name ?? "");
-          state.tests.push({ name: testName, status: "running", currentStep: "", durationMs: 0 });
-          renderStatus();
-          appendLog(`Test started: ${testName}`);
+          state.tests.push({ name: String(event.data.test_name ?? ""), status: "running", currentStep: "", durationMs: 0 });
         }
         if (event.type === "step_started") {
           const current = state.tests.at(-1);
           if (current) {
             current.currentStep = `${String(event.data.step_id ?? "")}: ${String(event.data.action_kind ?? "")}`;
           }
-          renderStatus();
-          appendLog(`  -> ${String(event.data.step_id ?? "")}: ${String(event.data.action_kind ?? "")}`);
         }
         if (event.type === "test_finished") {
-          const testName = String(event.data.test_name ?? "");
-          const status = String(event.data.status ?? "");
-          const duration = Number(event.data.duration_ms ?? 0);
-          const target = state.tests.find((test) => test.name === testName);
+          const name = String(event.data.test_name ?? "");
+          const target = state.tests.find((test) => test.name === name);
           if (target) {
-            target.status = status;
-            target.durationMs = duration;
+            target.status = String(event.data.status ?? "completed");
+            target.durationMs = Number(event.data.duration_ms ?? 0);
           }
-          if (status === "passed") {
-            state.passed += 1;
-          } else {
-            state.failed += 1;
-          }
-          renderStatus();
-          appendLog(`${status === "passed" ? "✓" : "✗"} Test finished: ${testName} (${duration}ms)`);
+          if (target?.status === "passed") state.passed += 1;
+          if (target?.status === "failed") state.failed += 1;
         }
         if (event.type === "suite_finished") {
-          state.status = "completed";
-          renderStatus();
-          appendLog(`Suite finished: ${String(event.data.passed_count ?? 0)} passed, ${String(event.data.failed_count ?? 0)} failed`);
+          state.suiteStatus = String(event.data.status ?? "completed");
         }
+        render();
       },
     });
 
@@ -363,12 +354,11 @@ export async function runTui(specs: string[]): Promise<void> {
           },
         },
       });
-      startSpinner();
-      setSpinner("Normalizing suite...");
-      const suite =
-        compiledPlanIsFresh(compiledPath, specPath)
-          ? JSON.parse(readFileSync(compiledPath, "utf8"))
-          : await normalizer.normalize(raw);
+
+      startSpinner("Normalizing suite...");
+      const suite = compiledPlanIsFresh(compiledPath, specPath)
+        ? JSON.parse(readFileSync(compiledPath, "utf8"))
+        : await normalizer.normalize(raw);
 
       if (!compiledPlanIsFresh(compiledPath, specPath)) {
         writeCompiledPlan({ suites: [suite], destination: compiledPath, sourceSpec: specPath, sourceHash: fileSha256(specPath) });
@@ -377,16 +367,17 @@ export async function runTui(specs: string[]): Promise<void> {
         appendLog(`Reusing compiled plan: ${compiledPath}`);
       }
 
-      if (state.modeLabel === "Compile Only") {
+      if (state.compileOnly) {
         appendLog("Compile complete. Execution skipped.");
-        state.status = "completed";
-        renderStatus();
+        state.suiteStatus = "completed";
+        state.lastRunSummary = `Last suite: ${suite.name}\nStatus: compiled\nCompiled: ${compiledPath}`;
+        render();
         return;
       }
 
       setSpinner("Running Playwright suite...");
       const executor = new SuiteExecutor({ eventBus });
-      const result = await executor.runSuite(suite, {
+      const result = await executor.runSuite(testSuiteSchema.parse(suite), {
         output_dir: projectConfig.paths.results_dir,
         headless: state.headless,
       });
@@ -398,67 +389,69 @@ export async function runTui(specs: string[]): Promise<void> {
       appendLog(`Report MD: ${persistedPaths.report_md}`);
       appendLog(`Report HTML: ${persistedPaths.report_html}`);
       appendLog(`Summary JSON: ${persistedPaths.summary_json}`);
-      lastRunSummary = `Last suite {bold}${result.suite_name}{/bold}\nStatus: ${result.status}\nArtifacts: ${result.artifacts_root}`;
+      state.lastRunSummary = `Last suite: ${result.suite_name}\nStatus: ${result.status}\nArtifacts: ${result.artifacts_root}`;
+      render();
     } catch (error) {
       appendLog(`Error: ${error instanceof Error ? error.message : String(error)}`);
-      state.status = "completed";
-      lastRunSummary = `Last suite failed before completion\nReason: ${error instanceof Error ? error.message : String(error)}`;
-      renderStatus();
+      state.suiteStatus = "failed";
+      state.lastRunSummary = `Last suite failed\nReason: ${error instanceof Error ? error.message : String(error)}`;
+      render();
     } finally {
-      spinnerActive = false;
+      state.spinnerActive = false;
       stopSpinner();
+      render();
     }
   }
 
-  screen.append(header);
-  screen.append(introBackdrop);
-  screen.append(introBox);
-  screen.append(runnerShell);
-  screen.append(footer);
-  renderStatus();
-  showIntro();
+  specList.on(SelectRenderableEvents.SELECTION_CHANGED, (index) => {
+    state.selectedIndex = index;
+    render();
+  });
 
-  introTimer = setInterval(() => {
-    if (currentView !== "intro") {
+  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+    if (key.ctrl && key.name === "c") {
+      renderer.destroy();
+      process.exit(0);
+    }
+
+    if (key.name === "q") {
+      renderer.destroy();
+      process.exit(0);
+    }
+
+    if (key.name === "return" && state.view === "intro") {
+      state.view = "runner";
+      render();
       return;
     }
-    introPulse += 1;
-    introContent();
-    screen.render();
-  }, 700);
 
-  screen.key(["q", "C-c"], () => {
-    if (introTimer) {
-      clearInterval(introTimer);
+    if (key.name === "escape" && state.view === "runner") {
+      state.view = "intro";
+      render();
+      return;
     }
-    process.exit(0);
-  });
-  screen.key(["enter"], () => {
-    if (currentView === "intro") {
-      showRunner();
+
+    if (key.name === "h") {
+      state.headless = !state.headless;
+      render();
+      return;
     }
-  });
-  screen.key(["escape"], () => {
-    if (currentView === "runner") {
-      showIntro();
+
+    if (key.name === "c") {
+      state.compileOnly = !state.compileOnly;
+      render();
+      return;
     }
-  });
-  screen.key(["h"], () => {
-    state.headless = !state.headless;
-    introContent();
-    renderStatus();
-  });
-  screen.key(["c"], () => {
-    state.modeLabel = state.modeLabel === "Compile Only" ? "Compile + Run" : "Compile Only";
-    introContent();
-    renderStatus();
-  });
-  screen.key(["r"], () => {
-    void executeSelected();
-  });
-  screen.key(["y"], () => {
-    copyLog();
+
+    if (key.name === "y") {
+      copyLog();
+      return;
+    }
+
+    if (key.name === "r" && state.view === "runner") {
+      void executeSelected();
+    }
   });
 
-  screen.render();
+  render();
 }

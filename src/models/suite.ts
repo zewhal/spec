@@ -51,8 +51,15 @@ export const testCaseSchema = z
     steps: z.array(actionSchema).default([]),
     expectations: z.array(expectationSchema).default([]),
     priority: z.string().default("normal"),
-    retry_policy: retryPolicySchema.default({}),
-    timeout_policy: timeoutPolicySchema.default({}),
+    retry_policy: retryPolicySchema.default({
+      max_retries: 0,
+      retry_on_flake: false,
+    }),
+    timeout_policy: timeoutPolicySchema.default({
+      test_timeout_ms: null,
+      navigation_timeout_ms: null,
+      assertion_timeout_ms: null,
+    }),
     data_binding: z.string().nullable().default(null),
     enabled: z.boolean().default(true),
   })
@@ -79,8 +86,23 @@ export const testSuiteSchema = z
     tests: z.array(testCaseSchema).default([]),
     setup_steps: z.array(actionSchema).default([]),
     teardown_steps: z.array(actionSchema).default([]),
-    artifact_policy: artifactPolicySchema.default({}),
-    runtime_policy: runtimePolicySchema.default({}),
+    artifact_policy: artifactPolicySchema.default({
+      capture_on_step: false,
+      capture_on_failure: true,
+      capture_console: true,
+      capture_network: true,
+      capture_trace: false,
+      capture_video: false,
+    }),
+    runtime_policy: runtimePolicySchema.default({
+      default_timeout_ms: 10_000,
+      assertion_timeout_ms: 10_000,
+      locator_resolution_timeout_ms: 5_000,
+      navigation_timeout_ms: 30_000,
+      max_retries: 0,
+      retry_on_flake: false,
+      strict_mode: true,
+    }),
     allowed_subdomains: z.array(z.string()).default([]),
   })
   .strict()

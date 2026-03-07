@@ -3,7 +3,7 @@ import type { Page } from "playwright";
 
 import { AssertionEngine, UnsupportedExpectationError } from "../assertions/engine";
 import type { Action } from "../models/action";
-import type { FailureClass, StepStatus, TestStatus } from "../models/enums";
+import type { ExecutionEventType, FailureClass, TestStatus } from "../models/enums";
 import type { Expectation } from "../models/expectation";
 import type { ExpectationResult, ResolverDecision, StepResult, SuiteResult, TestResult } from "../models/result";
 import type { TestCase, TestSuite } from "../models/suite";
@@ -35,7 +35,7 @@ export class SuiteExecutor {
   }
 
   private emit(type: string, data: Record<string, unknown>): void {
-    this.eventBus?.emitEvent(type as any, data);
+    this.eventBus?.emitEvent(type as ExecutionEventType, data);
   }
 
   async runSuite(suite: TestSuite, config: ExecutionConfig): Promise<SuiteResult> {
@@ -202,7 +202,9 @@ export class SuiteExecutor {
         artifactPath = artifacts.buildPath(suite.id, test.id, `${stepId}-failure`, "png");
         try {
           await page.screenshot({ path: artifactPath, fullPage: true });
-        } catch {}
+        } catch {
+          artifactPath = null;
+        }
       }
       const finishedAt = new Date();
       this.emit("step_finished", {

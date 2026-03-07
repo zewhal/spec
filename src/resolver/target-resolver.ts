@@ -79,10 +79,11 @@ export class TargetResolver {
     }
     if (target.role) {
       const roleName = target.exact_text ?? target.label_text ?? target.human_label;
+      const role = target.role as Parameters<Page["getByRole"]>[0];
       candidates.push({
         strategy: roleName ? "role_name" : "role_only",
         confidence: roleName ? "high" : "medium",
-        locator: roleName ? scope.getByRole(target.role as any, { name: roleName }) : scope.getByRole(target.role as any),
+        locator: roleName ? scope.getByRole(role, { name: roleName }) : scope.getByRole(role),
       });
     }
     if (target.label_text) {
