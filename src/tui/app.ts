@@ -47,6 +47,7 @@ export async function runTui(specs: string[]): Promise<void> {
   let spinnerTimer: ReturnType<typeof setTimeout> | null = null;
   let spinnerActive = false;
   let spinnerFrameIndex = 0;
+  let spinnerLabel = "Running...";
 
   const header = blessed.box({ top: 0, left: 0, width: "100%", height: 3, content: " spec - Markdown -> Runtime -> Bun ", tags: false, style: { fg: "white", bg: "blue" } });
   const footer = blessed.box({ bottom: 0, left: 0, width: "100%", height: 1, content: " r run  h headless  c compile-only  q quit ", style: { fg: "white", bg: "gray" } });
@@ -88,7 +89,7 @@ export async function runTui(specs: string[]): Promise<void> {
   function updateSpinnerLine(): void {
     const frame = ["[|]", "[/]", "[-]", "[\\]"][spinnerFrameIndex % 4] ?? "[|]";
     spinnerFrameIndex += 1;
-    const line = `${frame} Running...`;
+    const line = `${frame} ${spinnerLabel}`;
     if (spinnerActive && logLines.length > 0) {
       logLines[logLines.length - 1] = line;
     } else {
@@ -111,6 +112,13 @@ export async function runTui(specs: string[]): Promise<void> {
   function startSpinner(): void {
     spinnerActive = true;
     updateSpinnerLine();
+  }
+
+  function setSpinner(label: string): void {
+    spinnerLabel = label;
+    if (spinnerActive) {
+      updateSpinnerLine();
+    }
   }
 
   function stopSpinner(): void {
@@ -181,6 +189,7 @@ export async function runTui(specs: string[]): Promise<void> {
     appendLog(`Starting: ${path.basename(specPath)}`);
     appendLog(`Mode: ${state.modeLabel}`);
     spinnerFrameIndex = 0;
+    spinnerLabel = "Preparing run...";
 
     eventBus.subscribe({
       onEvent(event: ExecutionEvent) {
@@ -237,11 +246,15 @@ export async function runTui(specs: string[]): Promise<void> {
         projectConfig,
         config: {
           on_llm_call: (prompt, response) => {
+            setSpinner("Waiting for LLM...");
             appendLog(`LLM Prompt: ${prompt.slice(0, 100)}...`);
             appendLog(`LLM Response: ${JSON.stringify(response)}`);
+            setSpinner("Normalizing suite...");
           },
         },
       });
+      startSpinner();
+      setSpinner("Normalizing suite...");
       const suite =
         compiledPlanIsFresh(compiledPath, specPath)
           ? JSON.parse(readFileSync(compiledPath, "utf8"))
@@ -261,12 +274,13 @@ export async function runTui(specs: string[]): Promise<void> {
         return;
       }
 
-      startSpinner();
+      setSpinner("Running Playwright suite...");
       const executor = new SuiteExecutor({ eventBus });
       const result = await executor.runSuite(suite, {
         output_dir: projectConfig.paths.results_dir,
         headless: state.headless,
       });
+      setSpinner("Writing reports...");
       const persistedPaths = await persistSuiteOutputs(result, projectConfig.paths.results_dir, compiledPath);
       appendLog(`Completed! Status: ${result.status}`);
       appendLog(`Artifacts: ${result.artifacts_root}`);
