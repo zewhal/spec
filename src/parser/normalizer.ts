@@ -247,9 +247,12 @@ export class SpecNormalizer {
     return artifactPolicySchema.parse({ capture_on_step: false, capture_on_failure: true });
   }
 
-  private async normalizeStepText(stepText: string, variables: Record<string, string>, _stepIndex: number): Promise<Action> {
+  private async normalizeStepText(stepText: string, variables: Record<string, string>, stepIndex: number): Promise<Action> {
     const resolved = this.interpolateVariables(stepText.trim(), variables);
     const actionData = this.sanitizeActionPayload(await this.llmClient.normalizeStep(resolved), resolved);
+    if (actionData.id === undefined) {
+      actionData.id = `step-${stepIndex}`;
+    }
     return actionSchema.parse(actionData);
   }
 
@@ -323,12 +326,15 @@ export class SpecNormalizer {
     });
   }
 
-  private async normalizeExpectationText(expectationText: string, _expectationIndex: number): Promise<Expectation> {
+  private async normalizeExpectationText(expectationText: string, expectationIndex: number): Promise<Expectation> {
     const expectationData = this.sanitizeExpectationPayload(await this.llmClient.normalizeExpectation(expectationText.trim()));
+    if (expectationData.id === undefined) {
+      expectationData.id = `expect-${expectationIndex}`;
+    }
     try {
       return expectationSchema.parse(expectationData);
     } catch {
-      return this.normalizeFreeflowExpectationFallback(expectationText, _expectationIndex);
+      return this.normalizeFreeflowExpectationFallback(expectationText, expectationIndex);
     }
   }
 
@@ -597,7 +603,51 @@ export class SpecNormalizer {
         delete repaired.target;
       }
     }
+
+    const genericPageVisibility = this.coerceGenericPageVisibilityExpectation(repaired);
+    if (genericPageVisibility) {
+      return genericPageVisibility;
+    }
+
     return repaired;
+  }
+
+  private coerceGenericPageVisibilityExpectation(payload: Record<string, unknown>): Record<string, unknown> | null {
+    if (String(payload.kind ?? "").trim().toLowerCase() !== "text_visible") {
+      return null;
+    }
+
+    const text = typeof payload.text === "string" ? payload.text.trim().toLowerCase() : "";
+    const genericPhrases = new Set([
+      "page loads successfully",
+      "page is visible",
+      "page should load successfully",
+      "page should be visible",
+      "page should be accessible",
+      "page is accessible",
+      "the page loads successfully",
+      "the page is visible",
+      "the page should load successfully",
+      "the page should be visible",
+      "the page should be accessible",
+      "the page is accessible",
+    ]);
+
+    if (!genericPhrases.has(text)) {
+      return null;
+    }
+
+    return {
+      id: payload.id,
+      timeout_ms: payload.timeout_ms,
+      soft: payload.soft,
+      kind: "element_visible",
+      target: {
+        css: "body",
+        human_label: "page body",
+        require_visible: true,
+      },
+    };
   }
 
   private sanitizeClickTarget(target: Record<string, unknown>): Record<string, unknown> {

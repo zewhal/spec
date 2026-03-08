@@ -14,16 +14,21 @@ import {
 } from "@opentui/core";
 
 import { findProjectConfigPath, loadProjectConfig } from "../config";
+import type { Action } from "../models/action";
+import type { SuiteResult, TestResult } from "../models/result";
 import { testSuiteSchema } from "../models/suite";
+import type { TestSuite } from "../models/suite";
 import { parseMarkdownToRaw } from "../parser/markdown-parser";
 import { SpecNormalizer } from "../parser/normalizer";
 import { loadMarkdown } from "../parser/markdown-loader";
+import type { RawSuiteDocument } from "../parser/raw-models";
 import type { ExecutionEvent } from "../runtime/events";
 import { EventBus } from "../runtime/events";
 import { SuiteExecutor } from "../runtime/executor";
 import { compiledPlanIsFresh, defaultCompiledOutputPath, fileSha256, persistSuiteOutputs, writeCompiledPlan } from "../runtime/persistence";
 
 type TestState = {
+  id: string;
   name: string;
   status: string;
   currentStep: string;
@@ -57,6 +62,36 @@ type LogEntry = {
   body?: string;
 };
 
+type StepTraceMeta = {
+  testId: string;
+  testName: string;
+  phase: "setup" | "step" | "teardown";
+  stepId: string;
+  markdownLine: number | null;
+  markdownText: string;
+  action: Action;
+};
+
+type ActiveTrace = {
+  testId: string;
+  testName: string;
+  phase: "setup" | "step" | "teardown";
+  stepId: string;
+  markdownLine: number | null;
+  markdownText: string;
+  actionJson: string;
+  status: "running" | "passed" | "failed";
+  durationMs: number | null;
+  message: string | null;
+};
+
+type RawStepLineMap = {
+  testHeadingLines: Array<number | null>;
+  setupLines: Array<number | null>;
+  testLines: Array<Array<number | null>>;
+  teardownLines: Array<number | null>;
+};
+
 export async function runTui(specs: string[]): Promise<void> {
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
   const state: AppState = {
@@ -77,6 +112,10 @@ export async function runTui(specs: string[]): Promise<void> {
   };
 
   const logEntries: LogEntry[] = [];
+  let sourceSpecPath = "";
+  let sourceMarkdownLines: string[] = [];
+  let stepTraceMap = new Map<string, StepTraceMeta>();
+  let activeTrace: ActiveTrace | null = null;
   const rendererRoot = renderer.root;
 
   const footerText = new TextRenderable(renderer, { content: "enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit", fg: "#d9e2ec" });
@@ -122,6 +161,7 @@ export async function runTui(specs: string[]): Promise<void> {
 
   const statusText = new TextRenderable(renderer, { content: "", fg: "#f0f4f8" });
   const logFeed = instantiate(renderer, Box({ id: "log-feed", width: "100%", flexDirection: "column", gap: 1 }));
+  const traceText = new TextRenderable(renderer, { content: "", fg: "#d9e2ec", width: "100%" });
 
   const runnerViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "row", gap: 1 },
@@ -129,7 +169,11 @@ export async function runTui(specs: string[]): Promise<void> {
     Box(
       { flexGrow: 1, height: "100%", flexDirection: "column", gap: 1 },
       Box({ width: "100%", height: 12, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#111f2d", padding: 1 }, Box({ id: "status-scroll-host", width: "100%", height: "100%" })),
-      Box({ width: "100%", flexGrow: 1, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 0 }, Box({ id: "log-host", width: "100%", height: "100%" })),
+      Box(
+        { width: "100%", flexGrow: 1, flexDirection: "row", gap: 1 },
+        Box({ width: "50%", height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 0 }, Box({ id: "log-host", width: "100%", height: "100%" })),
+        Box({ width: "50%", height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#0a1522", padding: 0 }, Box({ id: "trace-host", width: "100%", height: "100%" })),
+      ),
     ),
   );
 
@@ -145,10 +189,19 @@ export async function runTui(specs: string[]): Promise<void> {
     stickyStart: "bottom",
     rootOptions: { backgroundColor: "#08121b", padding: 1 },
   });
+  const traceScroll = new ScrollBoxRenderable(renderer, {
+    width: "100%",
+    height: "100%",
+    stickyScroll: true,
+    stickyStart: "top",
+    rootOptions: { backgroundColor: "#0a1522", padding: 1 },
+  });
   statusScroll.add(statusText);
   logScroll.add(logFeed);
+  traceScroll.add(traceText);
   runnerView.findDescendantById("status-scroll-host")?.add(statusScroll);
   runnerView.findDescendantById("log-host")?.add(logScroll);
+  runnerView.findDescendantById("trace-host")?.add(traceScroll);
   body?.add(introView);
   rendererRoot.add(shell);
 
@@ -182,6 +235,7 @@ export async function runTui(specs: string[]): Promise<void> {
     setText(introRecent, state.lastRunSummary);
 
     setText(statusText, renderStatusText());
+    setText(traceText, renderTraceText());
     rebuildLogFeed();
 
     if (state.view === "intro") {
@@ -227,6 +281,46 @@ export async function runTui(specs: string[]): Promise<void> {
       lines.push("", `Spinner: ${state.spinnerLabel}`);
     }
     return lines.join("\n");
+  }
+
+  function renderTraceText(): string {
+    const lines = sourceMarkdownLines;
+    if (lines.length === 0) {
+      return [
+        "Live Translation / Execution",
+        "",
+        "No source loaded yet.",
+        "Run a spec to watch markdown map to runtime actions.",
+      ].join("\n");
+    }
+
+    const focusLine = activeTrace?.markdownLine ?? 1;
+    const windowSize = 3;
+    const start = Math.max(1, focusLine - windowSize);
+    const end = Math.min(lines.length, focusLine + windowSize);
+    const snippet: string[] = [];
+    for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
+      const marker = lineNumber === focusLine ? ">>" : "  ";
+      const rawLine = lines[lineNumber - 1] ?? "";
+      snippet.push(`${marker} ${String(lineNumber).padStart(4, " ")} | ${rawLine}`);
+    }
+
+    return [
+      "Live Translation / Execution",
+      "",
+      `Spec: ${sourceSpecPath ? path.basename(sourceSpecPath) : "(none)"}`,
+      `Current line: ${activeTrace?.markdownLine ? `L${activeTrace.markdownLine}` : "(waiting)"}`,
+      `Phase: ${activeTrace?.phase ?? "-"}    Step: ${activeTrace?.stepId ?? "-"}`,
+      `Test: ${activeTrace?.testName ?? "-"}`,
+      `Status: ${activeTrace?.status ?? "idle"}${activeTrace?.durationMs ? ` (${activeTrace.durationMs}ms)` : ""}`,
+      activeTrace?.message ? `Message: ${activeTrace.message}` : "Message: -",
+      "",
+      "Markdown",
+      ...snippet,
+      "",
+      "Action JSON",
+      activeTrace?.actionJson ?? "(waiting for first step)",
+    ].join("\n");
   }
 
   function rebuildLogFeed(): void {
@@ -451,11 +545,15 @@ export async function runTui(specs: string[]): Promise<void> {
     state.tests = [];
     state.suiteStatus = "running";
     state.suiteName = path.basename(specPath);
+    sourceSpecPath = specPath;
+    activeTrace = null;
+    stepTraceMap = new Map();
     render();
 
+    const projectConfigPath = findProjectConfigPath(specPath);
     const eventBus = new EventBus();
-    const projectConfig = loadProjectConfig(findProjectConfigPath(specPath));
-    const compiledPath = defaultCompiledOutputPath(findProjectConfigPath(specPath), specPath);
+    const projectConfig = loadProjectConfig(projectConfigPath);
+    const compiledPath = defaultCompiledOutputPath(projectConfigPath, specPath);
     appendLog(`Starting: ${path.basename(specPath)}`);
     appendLog(`Mode: ${state.compileOnly ? "Compile Only" : "Compile + Run"}`);
 
@@ -463,37 +561,109 @@ export async function runTui(specs: string[]): Promise<void> {
       onEvent(event: ExecutionEvent) {
         if (event.type === "suite_started") {
           state.suiteName = String(event.data.suite_name ?? "");
-          state.total = Number(event.data.test_count ?? 0);
         }
         if (event.type === "test_started") {
-          state.tests.push({ name: String(event.data.test_name ?? ""), status: "running", currentStep: "", durationMs: 0 });
-        }
-        if (event.type === "step_started") {
-          const current = state.tests.at(-1);
-          if (current) {
-            current.currentStep = `${String(event.data.step_id ?? "")}: ${String(event.data.action_kind ?? "")}`;
+          const testId = String(event.data.test_id ?? "");
+          const existing = state.tests.find((test) => test.id === testId);
+          if (!existing) {
+            state.tests.push({
+              id: testId,
+              name: String(event.data.test_name ?? ""),
+              status: "running",
+              currentStep: "",
+              durationMs: 0,
+            });
           }
         }
+        if (event.type === "step_started") {
+          const testId = String(event.data.test_id ?? "");
+          const stepId = String(event.data.step_id ?? "");
+          const rawPhase = String(event.data.phase ?? "step");
+          const phase: "setup" | "step" | "teardown" = rawPhase === "setup" || rawPhase === "teardown" ? rawPhase : "step";
+          const current = state.tests.find((test) => test.id === testId) ?? state.tests.at(-1);
+          if (current) {
+            current.currentStep = `${stepId}: ${String(event.data.action_kind ?? "")}`;
+          }
+
+          const trace = stepTraceMap.get(stepTraceKey(testId, phase, stepId)) ?? stepTraceMap.get(stepTraceKey(testId, "step", stepId));
+          if (trace) {
+            activeTrace = {
+              testId,
+              testName: trace.testName,
+              phase: trace.phase,
+              stepId: trace.stepId,
+              markdownLine: trace.markdownLine,
+              markdownText: trace.markdownText,
+              actionJson: JSON.stringify(trace.action, null, 2),
+              status: "running",
+              durationMs: null,
+              message: null,
+            };
+            logEntries.push({
+              kind: "result-info",
+              title: `Executing ${trace.markdownLine ? `L${trace.markdownLine}` : "line ?"} ${trace.stepId}`,
+              body: trace.markdownText,
+            });
+          } else {
+            activeTrace = {
+              testId,
+              testName: String(event.data.test_name ?? "Unknown test"),
+              phase,
+              stepId,
+              markdownLine: null,
+              markdownText: "Source line unavailable for this step.",
+              actionJson: "{}",
+              status: "running",
+              durationMs: null,
+              message: null,
+            };
+          }
+        }
+        if (event.type === "step_finished") {
+          const testId = String(event.data.test_id ?? "");
+          const stepId = String(event.data.step_id ?? "");
+          const status = String(event.data.status ?? "passed");
+          const durationMs = Number(event.data.duration_ms ?? 0);
+          const message = event.data.message ? String(event.data.message) : null;
+
+          if (activeTrace && activeTrace.testId === testId && activeTrace.stepId === stepId) {
+            activeTrace.status = status === "failed" ? "failed" : "passed";
+            activeTrace.durationMs = durationMs;
+            activeTrace.message = message;
+          }
+
+          logEntries.push({
+            kind: status === "failed" ? "result-fail" : "result-pass",
+            title: `${status === "failed" ? "Step failed" : "Step passed"}: ${stepId} (${durationMs}ms)`,
+            body: message ?? undefined,
+          });
+        }
         if (event.type === "test_finished") {
-          const name = String(event.data.test_name ?? "");
-          const target = state.tests.find((test) => test.name === name);
+          const testId = String(event.data.test_id ?? "");
+          const target = state.tests.find((test) => test.id === testId)
+            ?? state.tests.find((test) => test.name === String(event.data.test_name ?? ""));
           if (target) {
             target.status = String(event.data.status ?? "completed");
             target.durationMs = Number(event.data.duration_ms ?? 0);
           }
-          if (target?.status === "passed") state.passed += 1;
-          if (target?.status === "failed") state.failed += 1;
+          state.passed = state.tests.filter((test) => test.status === "passed").length;
+          state.failed = state.tests.filter((test) => test.status === "failed").length;
         }
         if (event.type === "suite_finished") {
-          state.suiteStatus = String(event.data.status ?? "completed");
+          state.suiteStatus = String(event.data.status ?? state.suiteStatus);
         }
         render();
       },
     });
 
     try {
-      const raw = parseMarkdownToRaw(await loadMarkdown(specPath));
-      const normalizer = new SpecNormalizer({
+      const markdownSource = await loadMarkdown(specPath);
+      sourceMarkdownLines = markdownSource.split(/\r?\n/u);
+      const raw = parseMarkdownToRaw(markdownSource);
+      const lineMap = buildRawStepLineMap(markdownSource, raw);
+      const isFreshCompiled = compiledPlanIsFresh(compiledPath, specPath);
+
+      const createNormalizer = () => new SpecNormalizer({
         projectConfig,
         config: {
           on_authoring_mode_detected: ({ test_name, authoring_mode }) => {
@@ -526,28 +696,58 @@ export async function runTui(specs: string[]): Promise<void> {
             logEntries.push({ kind: "llm-prompt", title: `Prompt: ${prompt.slice(0, 80)}...`, body: prompt });
             logEntries.push({ kind: "llm-json", title: "LLM JSON output", body: JSON.stringify(response, null, 2) });
             render();
-            setSpinner("Normalizing suite...");
+            setSpinner("Normalizing test...");
           },
         },
       });
 
-      startSpinner("Normalizing suite...");
-      const suite = testSuiteSchema.parse(
-        compiledPlanIsFresh(compiledPath, specPath)
-        ? stripCompiledMetadata(JSON.parse(readFileSync(compiledPath, "utf8")))
-        : await normalizer.normalize(raw),
-      );
+      const runProgressiveSuite = async (suite: TestSuite): Promise<SuiteResult> => {
+        const startedAt = new Date();
+        const results: TestResult[] = [];
+        state.total = suite.tests.length;
+        for (const test of suite.tests) {
+          const singleSuite = ensureStableActionIds({
+            ...suite,
+            tests: [test],
+          });
+          const executor = new SuiteExecutor({ eventBus });
+          const singleResult = await executor.runSuite(singleSuite, {
+            output_dir: projectConfig.paths.results_dir,
+            headless: state.headless,
+          });
+          results.push(...singleResult.tests);
+        }
 
-      if (!compiledPlanIsFresh(compiledPath, specPath)) {
-        writeCompiledPlan({ suites: [suite], destination: compiledPath, sourceSpec: specPath, sourceHash: fileSha256(specPath) });
-        appendLog(`Compiled plan: ${compiledPath}`);
-      } else {
-        appendLog(`Reusing compiled plan: ${compiledPath}`);
-      }
+        const finishedAt = new Date();
+        return {
+          suite_id: suite.id,
+          suite_name: suite.name,
+          started_at: startedAt.toISOString(),
+          finished_at: finishedAt.toISOString(),
+          duration_ms: finishedAt.getTime() - startedAt.getTime(),
+          status: results.some((test) => test.status === "failed") ? "failed" : "passed",
+          tests: results,
+          warnings: [],
+          artifacts_root: projectConfig.paths.results_dir,
+        };
+      };
 
       if (state.compileOnly) {
+        startSpinner(isFreshCompiled ? "Loading compiled suite..." : "Normalizing suite...");
+        const compiledSuite = isFreshCompiled
+          ? testSuiteSchema.parse(stripCompiledMetadata(JSON.parse(readFileSync(compiledPath, "utf8"))))
+          : await createNormalizer().normalize(raw);
+        const suite = ensureStableActionIds(compiledSuite);
         stopSpinner();
+        dropSpinnerEntry();
         state.spinnerActive = false;
+        if (!isFreshCompiled) {
+          writeCompiledPlan({ suites: [suite], destination: compiledPath, sourceSpec: specPath, sourceHash: fileSha256(specPath) });
+          appendLog(`Compiled plan: ${compiledPath}`);
+        } else {
+          appendLog(`Reusing compiled plan: ${compiledPath}`);
+        }
+        stepTraceMap = buildStepTraceMap(suite, raw, lineMap);
         appendResult("info", "Compile complete", [
           `Suite: ${suite.name}`,
           `Compiled plan: ${compiledPath}`,
@@ -559,26 +759,92 @@ export async function runTui(specs: string[]): Promise<void> {
         return;
       }
 
-      setSpinner("Running Playwright suite...");
-      const executor = new SuiteExecutor({ eventBus });
-      const result = await executor.runSuite(suite, {
-        output_dir: projectConfig.paths.results_dir,
-        headless: state.headless,
-      });
-      setSpinner("Writing reports...");
-      const persistedPaths = await persistSuiteOutputs(result, projectConfig.paths.results_dir, compiledPath);
+      let suiteForExecution: TestSuite;
+      let suiteResult: SuiteResult;
+
+      if (isFreshCompiled) {
+        suiteForExecution = ensureStableActionIds(
+          testSuiteSchema.parse(stripCompiledMetadata(JSON.parse(readFileSync(compiledPath, "utf8")))),
+        );
+        appendLog(`Reusing compiled plan: ${compiledPath}`);
+        stepTraceMap = buildStepTraceMap(suiteForExecution, raw, lineMap);
+        render();
+        suiteResult = await runProgressiveSuite(suiteForExecution);
+      } else {
+        const normalizer = createNormalizer();
+        startSpinner("Normalizing setup and teardown...");
+        const baseSuite = ensureStableActionIds(await normalizer.normalize({ ...raw, tests: [] }));
+        stopSpinner();
+        dropSpinnerEntry();
+        state.spinnerActive = false;
+
+        const translatedTests: TestSuite["tests"] = [];
+        const startedAt = new Date();
+        const testResults: TestResult[] = [];
+        state.total = raw.tests.length;
+
+        for (const [index, rawTest] of raw.tests.entries()) {
+          startSpinner(`Normalizing test ${index + 1}/${raw.tests.length}...`);
+          const partialRaw: RawSuiteDocument = {
+            ...raw,
+            setup_steps: [],
+            teardown_steps: [],
+            tests: [rawTest],
+          };
+          const partialSuite = ensureStableActionIds(await normalizer.normalize(partialRaw));
+          const normalizedTest = partialSuite.tests[0];
+          if (!normalizedTest) {
+            throw new Error(`Failed to normalize test ${index + 1}.`);
+          }
+          translatedTests.push(normalizedTest);
+          const previewSuite = ensureStableActionIds({ ...baseSuite, tests: [...translatedTests] });
+          stepTraceMap = buildStepTraceMap(previewSuite, raw, lineMap);
+          stopSpinner();
+          dropSpinnerEntry();
+          state.spinnerActive = false;
+          appendLog(`Translated test ${index + 1}/${raw.tests.length}: ${normalizedTest.name}`);
+          render();
+
+          const executor = new SuiteExecutor({ eventBus });
+          const singleResult = await executor.runSuite(ensureStableActionIds({ ...baseSuite, tests: [normalizedTest] }), {
+            output_dir: projectConfig.paths.results_dir,
+            headless: state.headless,
+          });
+          testResults.push(...singleResult.tests);
+        }
+
+        suiteForExecution = ensureStableActionIds({ ...baseSuite, tests: translatedTests });
+        writeCompiledPlan({ suites: [suiteForExecution], destination: compiledPath, sourceSpec: specPath, sourceHash: fileSha256(specPath) });
+        appendLog(`Compiled plan: ${compiledPath}`);
+        const finishedAt = new Date();
+        suiteResult = {
+          suite_id: suiteForExecution.id,
+          suite_name: suiteForExecution.name,
+          started_at: startedAt.toISOString(),
+          finished_at: finishedAt.toISOString(),
+          duration_ms: finishedAt.getTime() - startedAt.getTime(),
+          status: testResults.some((test) => test.status === "failed") ? "failed" : "passed",
+          tests: testResults,
+          warnings: [],
+          artifacts_root: projectConfig.paths.results_dir,
+        };
+      }
+
+      startSpinner("Writing reports...");
+      const persistedPaths = await persistSuiteOutputs(suiteResult, projectConfig.paths.results_dir, compiledPath);
       stopSpinner();
       state.spinnerActive = false;
       dropSpinnerEntry();
-      appendResult(result.status === "passed" ? "success" : "failure", `Suite ${result.status}`, [
-        `Suite: ${result.suite_name}`,
-        `Artifacts: ${result.artifacts_root}`,
+      appendResult(suiteResult.status === "passed" ? "success" : "failure", `Suite ${suiteResult.status}`, [
+        `Suite: ${suiteResult.suite_name}`,
+        `Artifacts: ${suiteResult.artifacts_root}`,
         `Result JSON: ${persistedPaths.result_json}`,
         `Report MD: ${persistedPaths.report_md}`,
         `Report HTML: ${persistedPaths.report_html}`,
         `Summary JSON: ${persistedPaths.summary_json}`,
       ]);
-      state.lastRunSummary = `Last suite: ${result.suite_name}\nStatus: ${result.status}\nArtifacts: ${result.artifacts_root}`;
+      state.suiteStatus = suiteResult.status;
+      state.lastRunSummary = `Last suite: ${suiteResult.suite_name}\nStatus: ${suiteResult.status}\nArtifacts: ${suiteResult.artifacts_root}`;
       render();
     } catch (error) {
       stopSpinner();
@@ -646,6 +912,183 @@ export async function runTui(specs: string[]): Promise<void> {
   });
 
   render();
+}
+
+function stepTraceKey(testId: string, phase: "setup" | "step" | "teardown", stepId: string): string {
+  return `${testId}::${phase}::${stepId}`;
+}
+
+function ensureStableActionIds(suite: TestSuite): TestSuite {
+  return {
+    ...suite,
+    setup_steps: suite.setup_steps.map((action, index) => ensureActionId(action, `setup-${index + 1}`)),
+    teardown_steps: suite.teardown_steps.map((action, index) => ensureActionId(action, `teardown-${index + 1}`)),
+    tests: suite.tests.map((test) => ({
+      ...test,
+      steps: test.steps.map((action, index) => ensureActionId(action, `step-${index + 1}`)),
+      expectations: test.expectations.map((expectation, index) => ({
+        ...expectation,
+        id: expectation.id ?? `expect-${index + 1}`,
+      })),
+    })),
+  };
+}
+
+function ensureActionId(action: Action, fallbackId: string): Action {
+  if (action.id) {
+    return action;
+  }
+  return {
+    ...action,
+    id: fallbackId,
+  } as Action;
+}
+
+function buildRawStepLineMap(markdownSource: string, raw: RawSuiteDocument): RawStepLineMap {
+  const lines = markdownSource.split(/\r?\n/u);
+  const headingByTestName = new Map<string, number>();
+  const headingPattern = /^\s*#{1,6}\s*test:\s*(.+?)\s*$/iu;
+  for (const [index, line] of lines.entries()) {
+    const match = line.match(headingPattern);
+    const headingName = match?.[1]?.trim().toLowerCase();
+    if (headingName && !headingByTestName.has(headingName)) {
+      headingByTestName.set(headingName, index + 1);
+    }
+  }
+
+  const testHeadingLines = raw.tests.map((test) => headingByTestName.get(test.name.trim().toLowerCase()) ?? null);
+  let cursor = 0;
+  const setupLines = raw.setup_steps.map((step) => {
+    const located = findSourceLine(lines, step, cursor);
+    cursor = located.nextCursor;
+    return located.line;
+  });
+
+  const testLines = raw.tests.map((test, testIndex) => {
+    const headingLine = testHeadingLines[testIndex];
+    if (headingLine && headingLine - 1 > cursor) {
+      cursor = headingLine - 1;
+    }
+    return test.steps.map((step) => {
+      const located = findSourceLine(lines, step, cursor);
+      cursor = located.nextCursor;
+      return located.line;
+    });
+  });
+
+  const teardownLines = raw.teardown_steps.map((step) => {
+    const located = findSourceLine(lines, step, cursor);
+    cursor = located.nextCursor;
+    return located.line;
+  });
+
+  return {
+    testHeadingLines,
+    setupLines,
+    testLines,
+    teardownLines,
+  };
+}
+
+function buildStepTraceMap(
+  suite: TestSuite,
+  raw: RawSuiteDocument,
+  lineMap: RawStepLineMap,
+): Map<string, StepTraceMeta> {
+  const map = new Map<string, StepTraceMeta>();
+
+  for (const [testIndex, test] of suite.tests.entries()) {
+    const rawTest = raw.tests[testIndex];
+    const headingLine = lineMap.testHeadingLines[testIndex] ?? null;
+
+    for (const [setupIndex, action] of suite.setup_steps.entries()) {
+      const line = lineMap.setupLines[setupIndex] ?? headingLine;
+      const text = raw.setup_steps[setupIndex] ?? "(setup step)";
+      const stepId = action.id ?? `setup-${setupIndex + 1}`;
+      map.set(stepTraceKey(test.id, "setup", stepId), {
+        testId: test.id,
+        testName: test.name,
+        phase: "setup",
+        stepId,
+        markdownLine: line,
+        markdownText: text,
+        action,
+      });
+    }
+
+    for (const [stepIndex, action] of test.steps.entries()) {
+      const line = lineMap.testLines[testIndex]?.[stepIndex] ?? headingLine;
+      const freeflowFallback = summarizeFreeflow(rawTest?.freeflow_block ?? "");
+      const text = rawTest?.steps[stepIndex] ?? freeflowFallback ?? `(step ${stepIndex + 1})`;
+      const stepId = action.id ?? `step-${stepIndex + 1}`;
+      map.set(stepTraceKey(test.id, "step", stepId), {
+        testId: test.id,
+        testName: test.name,
+        phase: "step",
+        stepId,
+        markdownLine: line,
+        markdownText: text,
+        action,
+      });
+    }
+
+    for (const [teardownIndex, action] of suite.teardown_steps.entries()) {
+      const line = lineMap.teardownLines[teardownIndex] ?? headingLine;
+      const text = raw.teardown_steps[teardownIndex] ?? "(teardown step)";
+      const stepId = action.id ?? `teardown-${teardownIndex + 1}`;
+      map.set(stepTraceKey(test.id, "teardown", stepId), {
+        testId: test.id,
+        testName: test.name,
+        phase: "teardown",
+        stepId,
+        markdownLine: line,
+        markdownText: text,
+        action,
+      });
+    }
+  }
+
+  return map;
+}
+
+function findSourceLine(lines: string[], sourceText: string, cursor: number): { line: number | null; nextCursor: number } {
+  const target = normalizeSourceLine(sourceText);
+  if (!target) {
+    return { line: null, nextCursor: cursor };
+  }
+
+  for (let index = cursor; index < lines.length; index += 1) {
+    if (normalizeSourceLine(lines[index] ?? "") === target) {
+      return { line: index + 1, nextCursor: index + 1 };
+    }
+  }
+
+  for (let index = cursor; index < lines.length; index += 1) {
+    const line = normalizeSourceLine(lines[index] ?? "");
+    if ((line.length > 0 && line.includes(target)) || (line.length > 0 && target.includes(line))) {
+      return { line: index + 1, nextCursor: index + 1 };
+    }
+  }
+
+  return { line: null, nextCursor: cursor };
+}
+
+function normalizeSourceLine(value: string): string {
+  return value
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/u, "")
+    .replace(/^\s*>\s?/u, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function summarizeFreeflow(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const firstLine = trimmed.split(/\r?\n/u).find((line) => line.trim().length > 0)?.trim();
+  return firstLine ?? null;
 }
 
 function testNameShort(name: string): string {

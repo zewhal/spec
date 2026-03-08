@@ -178,7 +178,15 @@ export class SuiteExecutor {
       resolverDecision = await this.executeActionImpl(page, suite, action, observer);
       this.assertAllowedDomain(suite, page.url());
       const finishedAt = new Date();
-      this.emit("step_finished", { suite_id: suite.id, test_id: test.id, step_id: stepId, action_kind: action.kind, status: "passed", duration_ms: finishedAt.getTime() - startedAt.getTime() });
+      this.emit("step_finished", {
+        suite_id: suite.id,
+        test_id: test.id,
+        step_id: stepId,
+        action_kind: action.kind,
+        phase: phaseName,
+        status: "passed",
+        duration_ms: finishedAt.getTime() - startedAt.getTime(),
+      });
       return {
         result: {
           step_id: stepId,
@@ -212,6 +220,7 @@ export class SuiteExecutor {
         test_id: test.id,
         step_id: stepId,
         action_kind: action.kind,
+        phase: phaseName,
         status: "failed",
         failure_class: failureClass,
         message: error instanceof Error ? error.message : String(error),
