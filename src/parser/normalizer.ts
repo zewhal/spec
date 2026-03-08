@@ -388,6 +388,16 @@ export class SpecNormalizer {
     const resolved = expectationText.trim();
     const lower = resolved.toLowerCase();
 
+    const coercedGeneric = this.coerceGenericPageVisibilityExpectation({
+      id: `expect-${expectationIndex}`,
+      kind: "text_visible",
+      text: resolved,
+      soft: false,
+    });
+    if (coercedGeneric) {
+      return expectationSchema.parse(coercedGeneric);
+    }
+
     if (
       lower === "page loads successfully" ||
       lower === "page is visible" ||
@@ -633,7 +643,14 @@ export class SpecNormalizer {
       "the page is accessible",
     ]);
 
-    if (!genericPhrases.has(text)) {
+    const genericPatterns = [
+      /\bpage\b.*\b(load|loaded|loads|visible|accessible)\b/iu,
+      /\bpage\b.*\bwithout\s+errors?\b/iu,
+      /\bwait\b.*\b(second|seconds|timeout|complete|completes|completed)\b/iu,
+      /\bwithout\s+errors?\b/iu,
+    ];
+
+    if (!genericPhrases.has(text) && !genericPatterns.some((pattern) => pattern.test(text))) {
       return null;
     }
 

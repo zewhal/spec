@@ -228,10 +228,10 @@ Open https://example.org/ and wait for one second.
     },
     llmClient: {
       normalizeStep: async () => ({ kind: "goto", url: "https://example.org/", readiness: "load" }),
-      normalizeExpectation: async () => ({ kind: "text_visible", text: "The page should load successfully" }),
+      normalizeExpectation: async () => ({ kind: "text_visible", text: "Page loads successfully without errors" }),
       extractTestOutline: async () => ({
         steps: ["Open https://example.org/ and wait for one second."],
-        expectations: ["The page should load successfully"],
+        expectations: ["Page loads successfully without errors"],
       }),
     } as unknown as MiniMaxClient,
   });
@@ -304,5 +304,58 @@ test("compiledPlanIsFresh only returns true when source hash matches", async () 
   expect(compiledPlanIsFresh(compiledPath, specPath)).toBe(true);
 
   await Bun.write(specPath, "# Suite: Freshness changed\n");
+  expect(compiledPlanIsFresh(compiledPath, specPath)).toBe(false);
+});
+
+test("compiledPlanIsFresh invalidates legacy plans without compiler version", async () => {
+  const tempRoot = (await Bun.$`mktemp -d`.text()).trim();
+  const specPath = path.join(tempRoot, "flow.md");
+  const compiledPath = path.join(tempRoot, "compiled.json");
+  await Bun.write(specPath, "# Suite: Legacy\n");
+
+  writeCompiledPlan({
+    suites: [
+      {
+        id: "legacy",
+        name: "Legacy",
+        base_url: "https://example.com",
+        browser: "chromium",
+        viewport: "desktop",
+        locale: "en-US",
+        variables: {},
+        datasets: {},
+        tests: [],
+        setup_steps: [],
+        teardown_steps: [],
+        artifact_policy: {
+          capture_on_step: false,
+          capture_on_failure: true,
+          capture_console: true,
+          capture_network: true,
+          capture_trace: false,
+          capture_video: false,
+        },
+        runtime_policy: {
+          default_timeout_ms: 10000,
+          assertion_timeout_ms: 10000,
+          locator_resolution_timeout_ms: 5000,
+          navigation_timeout_ms: 30000,
+          max_retries: 0,
+          retry_on_flake: false,
+          strict_mode: false,
+        },
+        allowed_subdomains: ["example.com"],
+      },
+    ],
+    destination: compiledPath,
+    sourceSpec: specPath,
+    sourceHash: fileSha256(specPath),
+  });
+
+  const payload = JSON.parse(await Bun.file(compiledPath).text()) as Record<string, unknown>;
+  const metadata = payload._spec as Record<string, unknown>;
+  delete metadata.compiler_version;
+  await Bun.write(compiledPath, JSON.stringify(payload, null, 2));
+
   expect(compiledPlanIsFresh(compiledPath, specPath)).toBe(false);
 });

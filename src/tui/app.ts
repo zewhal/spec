@@ -89,6 +89,7 @@ type RawStepLineMap = {
   testHeadingLines: Array<number | null>;
   setupLines: Array<number | null>;
   testLines: Array<Array<number | null>>;
+  freeflowLines: Array<number | null>;
   teardownLines: Array<number | null>;
 };
 
@@ -1026,6 +1027,17 @@ function buildRawStepLineMap(markdownSource: string, raw: RawSuiteDocument): Raw
     });
   });
 
+  const freeflowLines = raw.tests.map((test, testIndex) => {
+    const freeflowPreview = summarizeFreeflow(test.freeflow_block ?? "");
+    if (!freeflowPreview) {
+      return null;
+    }
+    const headingLine = testHeadingLines[testIndex];
+    const startCursor = headingLine && headingLine - 1 > cursor ? headingLine - 1 : cursor;
+    const located = findSourceLine(lines, freeflowPreview, startCursor);
+    return located.line;
+  });
+
   const teardownLines = raw.teardown_steps.map((step) => {
     const located = findSourceLine(lines, step, cursor);
     cursor = located.nextCursor;
@@ -1036,6 +1048,7 @@ function buildRawStepLineMap(markdownSource: string, raw: RawSuiteDocument): Raw
     testHeadingLines,
     setupLines,
     testLines,
+    freeflowLines,
     teardownLines,
   };
 }
@@ -1067,7 +1080,7 @@ function buildStepTraceMap(
     }
 
     for (const [stepIndex, action] of test.steps.entries()) {
-      const line = lineMap.testLines[testIndex]?.[stepIndex] ?? headingLine;
+      const line = lineMap.testLines[testIndex]?.[stepIndex] ?? lineMap.freeflowLines[testIndex] ?? headingLine;
       const freeflowFallback = summarizeFreeflow(rawTest?.freeflow_block ?? "");
       const text = rawTest?.steps[stepIndex] ?? freeflowFallback ?? `(step ${stepIndex + 1})`;
       const stepId = action.id ?? `step-${stepIndex + 1}`;
@@ -1138,6 +1151,13 @@ function summarizeFreeflow(value: string): string | null {
     return null;
   }
   const firstLine = trimmed.split(/\r?\n/u).find((line) => line.trim().length > 0)?.trim();
+  if (!firstLine) {
+    return null;
+  }
+  const cleaned = firstLine.replace(/^test:\s*.+?(?=\b(open|click|go|navigate|fill|enter|wait)\b)/iu, "").trim();
+  if (cleaned) {
+    return cleaned;
+  }
   return firstLine ?? null;
 }
 

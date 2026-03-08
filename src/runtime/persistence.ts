@@ -10,6 +10,8 @@ const compiledPlanMetadataSchema = {
   key: "_spec",
 };
 
+const compiledPlanVersion = "2026-03-08.2";
+
 export function defaultCompiledOutputPath(projectConfigPath: string, specPath: string): string {
   const projectRoot = path.dirname(projectConfigPath);
   const compiledRoot = path.join(projectRoot, "compiled");
@@ -41,6 +43,7 @@ export function writeCompiledPlan(options: {
   if (options.sourceHash) {
     metadata.source_hash = options.sourceHash;
   }
+  metadata.compiler_version = compiledPlanVersion;
 
   const payload: Record<string, unknown> =
     suitePayloads.length === 1
@@ -75,7 +78,12 @@ export function compiledPlanIsFresh(compiledPath: string, sourceSpec: string): b
   const typedMetadata = metadata as Record<string, unknown>;
   const sourceHash = typedMetadata.source_hash;
   const sourceSpecPath = typedMetadata.source_spec;
-  if (typeof sourceHash !== "string" || typeof sourceSpecPath !== "string") {
+  const compilerVersion = typedMetadata.compiler_version;
+  if (typeof sourceHash !== "string" || typeof sourceSpecPath !== "string" || typeof compilerVersion !== "string") {
+    return false;
+  }
+
+  if (compilerVersion !== compiledPlanVersion) {
     return false;
   }
 
