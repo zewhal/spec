@@ -92,6 +92,21 @@ type RawStepLineMap = {
   teardownLines: Array<number | null>;
 };
 
+const uiTheme = {
+  shellBg: "#060d15",
+  shellBodyBg: "#08121d",
+  topBarBg: "#12263a",
+  footerBg: "#10263d",
+  shellText: "#e6eef6",
+  panelBg: "#0d1a29",
+  panelMutedBg: "#0a1624",
+  panelBorder: "#2e4f6c",
+  panelTitle: "#a8c8e5",
+  panelText: "#d4e0ed",
+  panelSubtleText: "#8da8bf",
+  accent: "#58b4e6",
+} as const;
+
 export async function runTui(specs: string[]): Promise<void> {
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
   const state: AppState = {
@@ -118,30 +133,34 @@ export async function runTui(specs: string[]): Promise<void> {
   let activeTrace: ActiveTrace | null = null;
   const rendererRoot = renderer.root;
 
-  const footerText = new TextRenderable(renderer, { content: "enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit", fg: "#d9e2ec" });
+  const footerText = new TextRenderable(renderer, { content: "enter open runner  esc home  r run  h headless  c compile-only  y copy logs  q quit", fg: uiTheme.shellText });
   const shellNode = Box(
-    { width: "100%", height: "100%", flexDirection: "column", backgroundColor: "#08111b" },
-    Box({ width: "100%", height: 3, paddingLeft: 1, paddingRight: 1, backgroundColor: "#10233a", justifyContent: "center" }, new TextRenderable(renderer, { content: "spec - Markdown -> Runtime -> Bun - live", fg: "#f5f7fa" })),
-    Box({ id: "body-root", width: "100%", flexGrow: 1, padding: 1, backgroundColor: "#07111b" }),
-    Box({ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "#102a43" }, footerText),
+    { width: "100%", height: "100%", flexDirection: "column", backgroundColor: uiTheme.shellBg },
+    Box(
+      { width: "100%", height: 3, paddingLeft: 1, paddingRight: 1, backgroundColor: uiTheme.topBarBg, justifyContent: "space-between", flexDirection: "row", alignItems: "center" },
+      new TextRenderable(renderer, { content: "SPEC Runner", fg: uiTheme.shellText }),
+      new TextRenderable(renderer, { content: "Markdown -> Action JSON -> Browser", fg: uiTheme.panelSubtleText }),
+    ),
+    Box({ id: "body-root", width: "100%", flexGrow: 1, padding: 1, backgroundColor: uiTheme.shellBodyBg }),
+    Box({ width: "100%", height: 1, paddingLeft: 1, backgroundColor: uiTheme.footerBg }, footerText),
   );
 
-  const introHero = new TextRenderable(renderer, { content: "SPEC\n\nWrite markdown. Run real browsers.", fg: "#e6f1f8" });
-  const introStats = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
-  const introKeys = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
-  const introRecent = new TextRenderable(renderer, { content: "", fg: "#d9e2ec" });
+  const introHero = new TextRenderable(renderer, { content: "SPEC\n\nWrite markdown specs.\nWatch execution live.", fg: uiTheme.shellText });
+  const introStats = new TextRenderable(renderer, { content: "", fg: uiTheme.panelText });
+  const introKeys = new TextRenderable(renderer, { content: "", fg: uiTheme.panelText });
+  const introRecent = new TextRenderable(renderer, { content: "", fg: uiTheme.panelText });
 
   const introViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "column", gap: 1 },
     Box(
-      { width: "100%", height: 10, borderStyle: "rounded", borderColor: "#3aaed8", backgroundColor: "#0c1824", padding: 1, flexDirection: "row", gap: 2 },
+      { width: "100%", height: 10, borderStyle: "rounded", borderColor: uiTheme.accent, backgroundColor: uiTheme.panelBg, padding: 1, flexDirection: "row", gap: 2 },
       Box({ width: "60%", height: "100%", justifyContent: "center" }, introHero),
-      Box({ width: "40%", height: "100%", borderStyle: "single", borderColor: "#4cc9f0", backgroundColor: "#10202d", padding: 1 }, introStats),
+      Box({ width: "40%", height: "100%", borderStyle: "single", borderColor: uiTheme.panelBorder, backgroundColor: uiTheme.panelMutedBg, padding: 1 }, introStats),
     ),
     Box(
       { width: "100%", height: 8, flexDirection: "row", gap: 1 },
-      Box({ width: "32%", height: "100%", borderStyle: "single", borderColor: "#7bdff2", backgroundColor: "#0f1c2a", padding: 1 }, introKeys),
-      Box({ width: "68%", height: "100%", borderStyle: "single", borderColor: "#7bdff2", backgroundColor: "#09131d", padding: 1 }, introRecent),
+      Box({ width: "32%", height: "100%", borderStyle: "single", borderColor: uiTheme.panelBorder, backgroundColor: uiTheme.panelBg, padding: 1 }, introKeys),
+      Box({ width: "68%", height: "100%", borderStyle: "single", borderColor: uiTheme.panelBorder, backgroundColor: uiTheme.panelMutedBg, padding: 1 }, introRecent),
     ),
   );
 
@@ -150,29 +169,47 @@ export async function runTui(specs: string[]): Promise<void> {
     width: 28,
     height: 24,
     options: specs.map((spec) => ({ name: path.basename(spec), description: path.relative(process.cwd(), spec), value: spec })),
-    backgroundColor: "#0f1c2a",
-    textColor: "#d9e2ec",
-    selectedBackgroundColor: "#56c1ff",
-    selectedTextColor: "#000000",
-    descriptionColor: "#7a8b9a",
-    selectedDescriptionColor: "#1f2933",
+    backgroundColor: uiTheme.panelMutedBg,
+    textColor: uiTheme.panelText,
+    selectedBackgroundColor: uiTheme.accent,
+    selectedTextColor: "#051018",
+    descriptionColor: uiTheme.panelSubtleText,
+    selectedDescriptionColor: "#0f2233",
     showDescription: false,
   });
 
-  const statusText = new TextRenderable(renderer, { content: "", fg: "#f0f4f8" });
+  const statusText = new TextRenderable(renderer, { content: "", fg: uiTheme.panelText });
   const logFeed = instantiate(renderer, Box({ id: "log-feed", width: "100%", flexDirection: "column", gap: 1 }));
-  const traceText = new TextRenderable(renderer, { content: "", fg: "#d9e2ec", width: "100%" });
+  const traceText = new TextRenderable(renderer, { content: "", fg: uiTheme.panelText, width: "100%" });
+
+  const panelTitle = (label: string) => new TextRenderable(renderer, { content: label, fg: uiTheme.panelTitle });
 
   const runnerViewNode = Box(
     { width: "100%", height: "100%", flexDirection: "row", gap: 1 },
-    Box({ width: 30, height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#0f1c2a", padding: 1 }, specList),
+    Box(
+      { width: 30, height: "100%", borderStyle: "rounded", borderColor: uiTheme.panelBorder, backgroundColor: uiTheme.panelBg, padding: 1, flexDirection: "column", gap: 1 },
+      panelTitle("Specs"),
+      specList,
+    ),
     Box(
       { flexGrow: 1, height: "100%", flexDirection: "column", gap: 1 },
-      Box({ width: "100%", height: 12, borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#111f2d", padding: 1 }, Box({ id: "status-scroll-host", width: "100%", height: "100%" })),
+      Box(
+        { width: "100%", height: 12, borderStyle: "rounded", borderColor: uiTheme.panelBorder, backgroundColor: uiTheme.panelBg, padding: 1, flexDirection: "column", gap: 1 },
+        panelTitle("Run Status"),
+        Box({ id: "status-scroll-host", width: "100%", flexGrow: 1 }),
+      ),
       Box(
         { width: "100%", flexGrow: 1, flexDirection: "row", gap: 1 },
-        Box({ width: "50%", height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#08121b", padding: 0 }, Box({ id: "log-host", width: "100%", height: "100%" })),
-        Box({ width: "50%", height: "100%", borderStyle: "rounded", borderColor: "#315f7d", backgroundColor: "#0a1522", padding: 0 }, Box({ id: "trace-host", width: "100%", height: "100%" })),
+        Box(
+          { width: "50%", height: "100%", borderStyle: "rounded", borderColor: uiTheme.panelBorder, backgroundColor: uiTheme.panelMutedBg, padding: 1, flexDirection: "column", gap: 1 },
+          panelTitle("Execution Log"),
+          Box({ id: "log-host", width: "100%", flexGrow: 1 }),
+        ),
+        Box(
+          { width: "50%", height: "100%", borderStyle: "rounded", borderColor: uiTheme.panelBorder, backgroundColor: uiTheme.panelMutedBg, padding: 1, flexDirection: "column", gap: 1 },
+          panelTitle("Markdown -> Runtime Trace"),
+          Box({ id: "trace-host", width: "100%", flexGrow: 1 }),
+        ),
       ),
     ),
   );
@@ -181,20 +218,20 @@ export async function runTui(specs: string[]): Promise<void> {
   const body = shell.findDescendantById("body-root");
   const introView = instantiate(renderer, introViewNode);
   const runnerView = instantiate(renderer, runnerViewNode);
-  const statusScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "top", rootOptions: { backgroundColor: "#111f2d" } });
+  const statusScroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", stickyScroll: true, stickyStart: "top", rootOptions: { backgroundColor: uiTheme.panelBg } });
   const logScroll = new ScrollBoxRenderable(renderer, {
     width: "100%",
     height: "100%",
     stickyScroll: true,
     stickyStart: "bottom",
-    rootOptions: { backgroundColor: "#08121b", padding: 1 },
+    rootOptions: { backgroundColor: uiTheme.panelMutedBg, padding: 0 },
   });
   const traceScroll = new ScrollBoxRenderable(renderer, {
     width: "100%",
     height: "100%",
     stickyScroll: true,
     stickyStart: "top",
-    rootOptions: { backgroundColor: "#0a1522", padding: 1 },
+    rootOptions: { backgroundColor: uiTheme.panelMutedBg, padding: 0 },
   });
   statusScroll.add(statusText);
   logScroll.add(logFeed);
@@ -214,17 +251,23 @@ export async function runTui(specs: string[]): Promise<void> {
 
   function render(): void {
     setText(introStats, [
-      `Specs: ${specs.length}`,
+      "Session",
       "",
-      `Mode: ${state.compileOnly ? "Compile Only" : "Compile + Run"}`,
-      `Browser: ${state.headless ? "Headless" : "Headful"}`,
-      `Spinner: ${state.spinnerActive ? state.spinnerLabel : "Idle"}`,
+      `Specs discovered: ${specs.length}`,
+      `Current view: ${state.view}`,
       "",
-      "Auto mode prefers fixed parsing first.",
+      `Workflow: ${state.compileOnly ? "Compile Only" : "Compile + Run"}`,
+      `Browser mode: ${state.headless ? "Headless" : "Headful"}`,
+      `Background task: ${state.spinnerActive ? state.spinnerLabel : "Idle"}`,
+      "",
+      "Tip: use fixed grammar for deterministic runs.",
     ].join("\n"));
 
     setText(introKeys, [
+      "Keys",
+      "",
       "enter  open runner",
+      "r      run selected spec",
       "h      toggle browser",
       "c      toggle mode",
       "y      copy logs",
@@ -232,7 +275,7 @@ export async function runTui(specs: string[]): Promise<void> {
       "q      quit",
     ].join("\n"));
 
-    setText(introRecent, state.lastRunSummary);
+    setText(introRecent, ["Recent Run", "", state.lastRunSummary].join("\n"));
 
     setText(statusText, renderStatusText());
     setText(traceText, renderTraceText());
@@ -243,13 +286,13 @@ export async function runTui(specs: string[]): Promise<void> {
       if (body && !body.findDescendantById(introView.id)) {
         body.add(introView);
       }
-      setText(footerText, "enter open runner  h headless  c compile-only  q quit");
+      setText(footerText, "enter open runner  h toggle browser  c toggle mode  q quit");
     } else {
       body?.remove(introView.id);
       if (body && !body.findDescendantById(runnerView.id)) {
         body.add(runnerView);
       }
-      setText(footerText, "esc home  r run  h headless  c compile-only  y copy logs  q quit");
+      setText(footerText, "esc home  r run  h toggle browser  c toggle mode  y copy logs  q quit");
       specList.focus();
     }
 
@@ -261,17 +304,24 @@ export async function runTui(specs: string[]): Promise<void> {
       return [
         "Session Ready",
         "",
-        `Browser mode: ${state.headless ? "Headless" : "Headful"}`,
-        `Workflow: ${state.compileOnly ? "Compile Only" : "Compile + Run"}`,
-        `Spinner: ${state.spinnerActive ? state.spinnerLabel : "Idle"}`,
+        `Workflow : ${state.compileOnly ? "Compile Only" : "Compile + Run"}`,
+        `Browser  : ${state.headless ? "Headless" : "Headful"}`,
+        `Task     : ${state.spinnerActive ? state.spinnerLabel : "Idle"}`,
         "",
         "Select a spec and press r to start.",
       ].join("\n");
     }
 
-    const lines = [state.suiteName || "Active Suite", `Status: ${state.suiteStatus}`, "", `Passed ${state.passed}   Failed ${state.failed}   Total ${state.total}`, ""];
+    const lines = [
+      state.suiteName || "Active Suite",
+      `Status   : ${state.suiteStatus}`,
+      `Progress : ${state.tests.length}/${state.total} tests finished`,
+      `Results  : pass ${state.passed}  fail ${state.failed}`,
+      "",
+      "Tests",
+    ];
     for (const test of state.tests) {
-      const icon = test.status === "passed" ? "[pass]" : test.status === "failed" ? "[fail]" : test.status === "running" ? "[run]" : "[wait]";
+      const icon = test.status === "passed" ? "[ok]" : test.status === "failed" ? "[x]" : test.status === "running" ? "[..]" : "[ ]";
       lines.push(`${icon} ${test.name}${test.durationMs ? ` (${test.durationMs}ms)` : ""}`);
       if (test.currentStep) {
         lines.push(`  ${test.currentStep}`);
@@ -306,16 +356,16 @@ export async function runTui(specs: string[]): Promise<void> {
     }
 
     return [
-      "Live Translation / Execution",
+      "Trace Stream",
       "",
       `Spec: ${sourceSpecPath ? path.basename(sourceSpecPath) : "(none)"}`,
-      `Current line: ${activeTrace?.markdownLine ? `L${activeTrace.markdownLine}` : "(waiting)"}`,
-      `Phase: ${activeTrace?.phase ?? "-"}    Step: ${activeTrace?.stepId ?? "-"}`,
+      `Line: ${activeTrace?.markdownLine ? `L${activeTrace.markdownLine}` : "(waiting)"}`,
       `Test: ${activeTrace?.testName ?? "-"}`,
+      `Step: ${activeTrace?.phase ?? "-"} / ${activeTrace?.stepId ?? "-"}`,
       `Status: ${activeTrace?.status ?? "idle"}${activeTrace?.durationMs ? ` (${activeTrace.durationMs}ms)` : ""}`,
-      activeTrace?.message ? `Message: ${activeTrace.message}` : "Message: -",
+      activeTrace?.message ? `Error: ${activeTrace.message}` : "Error: -",
       "",
-      "Markdown",
+      "Markdown Context",
       ...snippet,
       "",
       "Action JSON",
@@ -328,7 +378,7 @@ export async function runTui(specs: string[]): Promise<void> {
     const llmLaneWidth = "92%";
 
     if (logEntries.length === 0) {
-      logFeed.add(new TextRenderable(renderer, { content: "No logs yet. Start a run to see live execution output.", fg: "#94a3b8" }));
+      logFeed.add(new TextRenderable(renderer, { content: "No logs yet. Start a run to see live execution output.", fg: uiTheme.panelSubtleText }));
       return;
     }
 
@@ -363,17 +413,17 @@ export async function runTui(specs: string[]): Promise<void> {
   function colorForEntry(kind: LogEntryKind): string {
     switch (kind) {
       case "llm-prompt":
-        return "yellow";
+        return "#f6c76a";
       case "llm-json":
-        return "cyan";
+        return "#67d0f5";
       case "result-pass":
-        return "green";
+        return "#79db95";
       case "result-fail":
-        return "red";
+        return "#f48a8a";
       case "result-info":
-        return "blue";
+        return "#79b5ff";
       default:
-        return "white";
+        return uiTheme.panelText;
     }
   }
 
@@ -393,17 +443,17 @@ export async function runTui(specs: string[]): Promise<void> {
   function entryBadge(kind: LogEntryKind): string {
     switch (kind) {
       case "llm-prompt":
-        return "YOU -> LLM";
+        return "[prompt]";
       case "llm-json":
-        return "LLM -> SPEC";
+        return "[json]";
       case "result-pass":
-        return "PASS";
+        return "[pass]";
       case "result-fail":
-        return "FAIL";
+        return "[fail]";
       case "result-info":
-        return "INFO";
+        return "[info]";
       default:
-        return "LOG";
+        return "[log]";
     }
   }
 
